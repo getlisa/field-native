@@ -1,98 +1,182 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { Redirect } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
+import LoginForm from '@/components/auth/LoginForm';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { useTheme } from '@/contexts/ThemeContext';
+import { useAuth } from '@/hooks/useAuth';
+import { credentialService } from '@/services/credentialService';
+import { useAuthStore } from '@/store/useAuthStore';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const { login, logout, status: authStatus, error: authError, isAuthenticated } = useAuth();
+  const { colors } = useTheme();
+  const hasHydrated = useAuthStore((state) => state._hasHydrated);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [hasSavedCredentials, setHasSavedCredentials] = useState(false);
+  const [checkingCredentials, setCheckingCredentials] = useState(true);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // Track keyboard height on Android to position form above keyboard
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const keyboardShowListener = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+
+    const keyboardHideListener = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      keyboardShowListener.remove();
+      keyboardHideListener.remove();
+    };
+  }, []);
+
+  // Check for saved credentials on mount
+  useEffect(() => {
+    const checkSavedCredentials = async () => {
+      try {
+        const hasCredentials = await credentialService.hasCredentials();
+        setHasSavedCredentials(hasCredentials);
+        if (hasCredentials) {
+          setRememberMe(true);
+        }
+      } catch (error) {
+        // Ignore errors, just don't show saved credentials option
+      } finally {
+        setCheckingCredentials(false);
+      }
+    };
+
+    checkSavedCredentials();
+  }, []);
+
+  // Load saved credentials when user taps the banner
+  const handleUseSavedCredentials = useCallback(async () => {
+    try {
+      setAuthLoading(true);
+      const credentials = await credentialService.loadCredentials();
+      
+      if (credentials) {
+        setEmail(credentials.email);
+        setPassword(credentials.password);
+        setRememberMe(true);
+      }
+    } catch (error) {
+      // Failed to load, user can enter manually
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const handleLogin = async () => {
+    setAuthLoading(true);
+    try {
+      await login({ email: email.trim(), password });
+      
+      // Save credentials if remember me is checked and login was successful
+      if (rememberMe) {
+        await credentialService.saveCredentials(email.trim(), password);
+      } else {
+        // Clear any previously saved credentials
+        await credentialService.clearCredentials();
+      }
+      // Navigation happens via Redirect below when isAuthenticated becomes true
+    } catch {
+      // Login failed, don't save credentials
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleRememberMeChange = useCallback((value: boolean) => {
+    setRememberMe(value);
+    if (!value) {
+      // Clear credentials if user unchecks remember me
+      credentialService.clearCredentials();
+      setHasSavedCredentials(false);
+    }
+  }, []);
+
+  // Show loading while store is hydrating from AsyncStorage
+  if (!hasHydrated || checkingCredentials) {
+    return (
+      <ThemedView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.tint} />
+        </View>
       </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    );
+  }
+
+  // Redirect to jobs tab if already authenticated
+  if (isAuthenticated) {
+    return <Redirect href="/(tabs)/jobs" />;
+  }
+
+  return (
+    <ThemedView style={styles.container}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <KeyboardAvoidingView
+          style={styles.keyboardView}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View
+            style={[
+              styles.loginFormContainer,
+              Platform.OS === 'android' && keyboardHeight > 0 && { marginBottom: keyboardHeight },
+            ]}
+          >
+            <LoginForm
+            email={email}
+            password={password}
+            onEmailChange={setEmail}
+            onPasswordChange={setPassword}
+            onSubmit={handleLogin}
+            onLogout={logout}
+            status={authStatus === 'authenticated' ? 'Logged in successfully' : null}
+            error={authError}
+            isAuthenticated={isAuthenticated}
+            loading={authLoading}
+            rememberMe={rememberMe}
+            onRememberMeChange={handleRememberMeChange}
+            hasSavedCredentials={hasSavedCredentials}
+            onUseSavedCredentials={handleUseSavedCredentials}
+          />
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
+  container: {
+    flex: 1,
+  },
+  safeArea: {
+    flex: 1,
+  },
+  keyboardView: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  loginFormContainer: {
+    width: '100%',
+  },
+  loadingContainer: {
+    flex: 1,
     alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+    justifyContent: 'center',
   },
 });
