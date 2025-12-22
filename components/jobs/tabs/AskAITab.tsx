@@ -35,6 +35,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useJobDetailContext } from '@/contexts/JobDetailContext';
 import { copilotChatService, type CopilotMessage } from '@/services/copilotChatService';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import type { MediaAsset } from '@/lib/media';
 import type { Message, PendingImage } from '@/components/chat/types';
 
@@ -53,11 +54,13 @@ export const AskAITab: React.FC = () => {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // TTS hook for voice agent
+  const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
 
   const isAllowed = canUseAskAI;
 
@@ -298,7 +301,11 @@ export const AskAITab: React.FC = () => {
                         msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
                       )
                     );
+                    // Add token to TTS queue for voice playback
+                    addToQueue(event.content);
                   } else if (event.type === 'done' && event.data) {
+                    // Flush any remaining TTS buffer
+                    flush();
                     // Create message if it wasn't created during streaming (no chunks received)
                     if (!messageCreated) {
                       messageCreated = true;
@@ -320,11 +327,13 @@ export const AskAITab: React.FC = () => {
                     }
                   } else if (event.type === 'error') {
                     console.warn('[AskAI] Stream error:', event.error);
+                    stopTTS(); // Stop TTS on error
                   }
                 },
               });
             } catch (streamErr) {
               console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
+              stopTTS(); // Stop TTS on stream error
               
               // Fallback: Use non-streaming API if XMLHttpRequest fails
               const { aiMessage } = await copilotChatService.sendMessage({
@@ -401,7 +410,11 @@ export const AskAITab: React.FC = () => {
                       msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
                     )
                   );
+                  // Add token to TTS queue for voice playback
+                  addToQueue(event.content);
                 } else if (event.type === 'done' && event.data) {
+                  // Flush any remaining TTS buffer
+                  flush();
                   // Finalize with server message
                   const finalAi = mapCopilotMessageToUi(event.data);
                   setMessages((prev) =>
@@ -413,11 +426,13 @@ export const AskAITab: React.FC = () => {
                   );
                 } else if (event.type === 'error') {
                   console.warn('[AskAI] Stream error:', event.error);
+                  stopTTS(); // Stop TTS on error
                 }
               },
             });
           } catch (streamErr) {
             console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
+            stopTTS(); // Stop TTS on stream error
             // Fallback to non-streaming if stream fails
             const { userMessage, aiMessage } = await copilotChatService.sendMessage({
               conversationId: convId,
@@ -457,11 +472,12 @@ export const AskAITab: React.FC = () => {
         }
       } catch (err) {
         console.warn('[AskAI] Send failed', err);
+        stopTTS(); // Stop TTS on error
       } finally {
         setIsLoading(false);
       }
     },
-    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages]
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
   );
 
   // Handle image selection (from camera or gallery)
@@ -482,8 +498,8 @@ export const AskAITab: React.FC = () => {
 
   // Stop AI speaking
   const handleStopSpeaking = useCallback(() => {
-    setIsSpeaking(false);
-  }, []);
+    stopTTS();
+  }, [stopTTS]);
 
   // Handle voice recordings - transcribe and send
   const handleVoiceRecorded = useCallback(

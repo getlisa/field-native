@@ -12,6 +12,7 @@ export default {
     newArchEnabled: true,
     ios: {
       supportsTablet: true,
+      buildNumber: '2',
       infoPlist: {
         // Microphone permission (for live transcription)
         NSMicrophoneUsageDescription: 'This app needs access to your microphone for live transcription during job visits.',

@@ -184,6 +184,7 @@ export class AudioRecorder {
       }
 
       // Configure iOS audio session for maximum microphone gain
+      // MUST be done BEFORE init() and start()
       if (Platform.OS === 'ios' && LiveAudioStream.configureAudioSession) {
         try {
           await LiveAudioStream.configureAudioSession({
@@ -195,10 +196,15 @@ export class AudioRecorder {
           if (__DEV__) {
             console.log('[Audio] ✅ iOS audio session configured for maximum gain');
           }
+          
+          // Small delay to ensure audio session is fully configured
+          await new Promise(resolve => setTimeout(resolve, 100));
         } catch (err) {
-          // Non-critical - continue even if this fails
+          // This error can happen if audio session is in use
+          console.error('[Audio] ❌ Failed to configure iOS audio session:', err);
+          // Try to continue anyway - the native module will attempt to activate
           if (__DEV__) {
-            console.log('[Audio] ⚠️ Could not configure iOS audio session:', err);
+            console.log('[Audio] ⚠️ Continuing without pre-configuration (native module will configure)');
           }
         }
       }
@@ -210,6 +216,7 @@ export class AudioRecorder {
       this.appStateSubscription = AppState.addEventListener('change', this.handleAppStateChange);
 
       // Initialize and start the audio stream
+      // The native module will preserve the audio session config we set above
       LiveAudioStream.init(nativeConfig);
       this.attachDataListener();
       LiveAudioStream.start();

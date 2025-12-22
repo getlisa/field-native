@@ -769,6 +769,15 @@ export default function JobDetailPage() {
               )}
               {job.status === 'ongoing' && (
                 <View style={styles.actionButtonRow}>
+                  {/* Show LIVE indicator when recording */}
+                  {isRecording && (
+                    <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420', marginRight: 8 }]}>
+                      <View style={styles.liveDot} />
+                      <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
+                        LIVE
+                      </ThemedText>
+                    </View>
+                  )}
                   {(() => {
                     const showResume = !isRecording && !isConnected && !isConnecting && (visitSession?.id || job?.visit_sessions?.id);
                     const showIconOnly = showResume; // Use icons when both buttons are shown

@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { formatDistanceToNow } from 'date-fns';
-import React, { useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import React, { useState, useMemo } from 'react';
+import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
+import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -43,6 +44,107 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
 
   const isChecklistUpdate = message.metadata?.type === 'checklist_update';
   const isProactiveSuggestion = message.metadata?.type === 'proactive_suggestion';
+
+  // Create theme-aware markdown styles
+  const markdownStyles = useMemo(() => ({
+    body: {
+      color: isAssistant ? colors.text : '#ffffff',
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    paragraph: {
+      marginTop: 0,
+      marginBottom: 8,
+    },
+    strong: {
+      fontWeight: '600' as const,
+      color: isAssistant ? colors.text : '#ffffff',
+    },
+    em: {
+      fontStyle: 'italic' as const,
+      color: isAssistant ? colors.text : '#ffffff',
+    },
+    link: {
+      color: isAssistant ? colors.primary : '#ffffff',
+      textDecorationLine: 'underline' as const,
+    },
+    code_inline: {
+      backgroundColor: isAssistant ? colors.backgroundSecondary : 'rgba(255,255,255,0.2)',
+      color: isAssistant ? colors.text : '#ffffff',
+      paddingHorizontal: 4,
+      paddingVertical: 2,
+      borderRadius: 4,
+      fontSize: 13,
+      fontFamily: 'monospace',
+    },
+    code_block: {
+      backgroundColor: isAssistant ? colors.backgroundSecondary : 'rgba(255,255,255,0.2)',
+      color: isAssistant ? colors.text : '#ffffff',
+      padding: 8,
+      borderRadius: 8,
+      fontSize: 13,
+      fontFamily: 'monospace',
+      marginVertical: 8,
+    },
+    fence: {
+      backgroundColor: isAssistant ? colors.backgroundSecondary : 'rgba(255,255,255,0.2)',
+      color: isAssistant ? colors.text : '#ffffff',
+      padding: 8,
+      borderRadius: 8,
+      fontSize: 13,
+      fontFamily: 'monospace',
+      marginVertical: 8,
+    },
+    heading1: {
+      fontSize: 18,
+      fontWeight: '700' as const,
+      color: isAssistant ? colors.text : '#ffffff',
+      marginTop: 8,
+      marginBottom: 8,
+    },
+    heading2: {
+      fontSize: 16,
+      fontWeight: '600' as const,
+      color: isAssistant ? colors.text : '#ffffff',
+      marginTop: 8,
+      marginBottom: 6,
+    },
+    heading3: {
+      fontSize: 15,
+      fontWeight: '600' as const,
+      color: isAssistant ? colors.text : '#ffffff',
+      marginTop: 6,
+      marginBottom: 4,
+    },
+    bullet_list: {
+      marginVertical: 4,
+    },
+    ordered_list: {
+      marginVertical: 4,
+    },
+    list_item: {
+      marginVertical: 2,
+      flexDirection: 'row' as const,
+    },
+    bullet_list_icon: {
+      color: isAssistant ? colors.text : '#ffffff',
+      marginLeft: 4,
+      marginRight: 8,
+    },
+    ordered_list_icon: {
+      color: isAssistant ? colors.text : '#ffffff',
+      marginLeft: 4,
+      marginRight: 8,
+    },
+    blockquote: {
+      backgroundColor: isAssistant ? colors.backgroundSecondary : 'rgba(255,255,255,0.1)',
+      borderLeftColor: isAssistant ? colors.primary : '#ffffff',
+      borderLeftWidth: 4,
+      marginVertical: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+  }), [colors, isAssistant]);
 
   const imageAttachments = (message.attachments || []).filter((a: MessageAttachment) => {
     const type = a.fileType || '';
@@ -209,13 +311,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
 
           {/* Show content text (e.g., question) even for image messages */}
           {message.content ? (
-            <ThemedText
-              style={[
-                styles.messageText,
-                { color: isAssistant ? colors.text : '#ffffff' },
-              ]}>
+            <Markdown
+              style={markdownStyles}
+              onLinkPress={(url) => {
+                Linking.canOpenURL(url).then((supported) => {
+                  if (supported) {
+                    Linking.openURL(url);
+                  }
+                });
+                return false;
+              }}
+            >
               {message.content}
-            </ThemedText>
+            </Markdown>
           ) : null}
         </View>
         <ThemedText

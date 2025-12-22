@@ -20,6 +20,10 @@ public class ExpoLiveAudioModule: Module {
   // Debug: chunk counter
   private var chunkCount = 0
   
+  // Notification observers for audio interruptions
+  private var interruptionObserver: NSObjectProtocol?
+  private var routeChangeObserver: NSObjectProtocol?
+  
   public func definition() -> ModuleDefinition {
     Name("ExpoLiveAudio")
     
@@ -110,10 +114,25 @@ public class ExpoLiveAudioModule: Module {
       options.insert(.allowBluetoothA2DP)
     }
     
-    try audioSession.setCategory(category, mode: mode, options: options)
-    try audioSession.setActive(true)
+    // Try to set category first
+    do {
+      try audioSession.setCategory(category, mode: mode, options: options)
+      print("[ExpoLiveAudio] ✅ Audio session category configured (category: \(categoryString), mode: \(modeString))")
+    } catch {
+      print("[ExpoLiveAudio] ⚠️ Could not set audio category: \(error)")
+      // Don't throw - try to activate anyway with existing category
+    }
     
-    print("[ExpoLiveAudio] ✅ Audio session configured (category: \(categoryString), mode: \(modeString))")
+    // Try to activate
+    do {
+      try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+      print("[ExpoLiveAudio] ✅ Audio session activated")
+    } catch {
+      print("[ExpoLiveAudio] ⚠️ Could not activate audio session: \(error)")
+      // Try one more time without options
+      try audioSession.setActive(true)
+      print("[ExpoLiveAudio] ✅ Audio session activated (fallback)")
+    }
   }
   
   // MARK: - Recording Control
@@ -131,10 +150,20 @@ public class ExpoLiveAudioModule: Module {
     // Reset chunk counter
     chunkCount = 0
     
-    // Configure audio session for recording
+    // Ensure audio session is active (but DON'T reconfigure category/mode)
+    // The app should configure the session BEFORE calling start() via configureAudioSession()
     let audioSession = AVAudioSession.sharedInstance()
-    try audioSession.setCategory(.record, mode: .measurement, options: [])
-    try audioSession.setActive(true)
+    
+    // Only activate if not already active - preserve existing configuration
+    if !audioSession.isOtherAudioPlaying {
+      do {
+        try audioSession.setActive(true)
+        print("[ExpoLiveAudio] ✅ Audio session activated (preserving existing configuration)")
+      } catch {
+        print("[ExpoLiveAudio] ⚠️ Could not activate audio session: \(error)")
+        // Continue anyway - session might already be active
+      }
+    }
     
     // Initialize audio engine
     audioEngine = AVAudioEngine()
@@ -181,6 +210,9 @@ public class ExpoLiveAudioModule: Module {
     // Start engine
     try engine.start()
     
+    // Setup audio interruption handling
+    setupInterruptionHandling()
+    
     isRecording = true
     sendEvent("onStarted", [:])
     
@@ -204,8 +236,14 @@ public class ExpoLiveAudioModule: Module {
     // Clean up converter
     audioConverter = nil
     
-    // Deactivate audio session
-    try? AVAudioSession.sharedInstance().setActive(false)
+    // DON'T deactivate audio session - this can interrupt other components
+    // like WebSocket connections or TTS playback
+    // Let the app manage the audio session lifecycle
+    // try? AVAudioSession.sharedInstance().setActive(false)
+    print("[ExpoLiveAudio] ℹ️ Audio session remains active (preserves WebSocket/network)")
+    
+    // Remove interruption observers
+    removeInterruptionHandling()
     
     isRecording = false
     sendEvent("onStopped", [:])
@@ -306,10 +344,118 @@ public class ExpoLiveAudioModule: Module {
     ])
   }
   
+  // MARK: - Audio Interruption Handling
+  
+  private func setupInterruptionHandling() {
+    let notificationCenter = NotificationCenter.default
+    
+    // Handle audio interruptions (phone calls, Siri, etc.)
+    interruptionObserver = notificationCenter.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: .main
+    ) { [weak self] notification in
+      self?.handleInterruption(notification)
+    }
+    
+    // Handle route changes (Bluetooth connect/disconnect, headphone plug, etc.)
+    routeChangeObserver = notificationCenter.addObserver(
+      forName: AVAudioSession.routeChangeNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: .main
+    ) { [weak self] notification in
+      self?.handleRouteChange(notification)
+    }
+    
+    print("[ExpoLiveAudio] 🎧 Audio interruption handling setup")
+  }
+  
+  private func removeInterruptionHandling() {
+    if let observer = interruptionObserver {
+      NotificationCenter.default.removeObserver(observer)
+      interruptionObserver = nil
+    }
+    
+    if let observer = routeChangeObserver {
+      NotificationCenter.default.removeObserver(observer)
+      routeChangeObserver = nil
+    }
+    
+    print("[ExpoLiveAudio] 🎧 Audio interruption handling removed")
+  }
+  
+  private func handleInterruption(_ notification: Notification) {
+    guard let userInfo = notification.userInfo,
+          let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+      return
+    }
+    
+    switch type {
+    case .began:
+      // Interruption began (phone call, Siri, etc.)
+      print("[ExpoLiveAudio] ⚠️ Audio interruption began")
+      // Audio engine will be paused automatically by iOS
+      
+    case .ended:
+      // Interruption ended
+      guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+        return
+      }
+      let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+      
+      if options.contains(.shouldResume) {
+        print("[ExpoLiveAudio] ✅ Audio interruption ended - resuming recording")
+        
+        // Try to resume recording
+        do {
+          try AVAudioSession.sharedInstance().setActive(true)
+          try audioEngine?.start()
+          print("[ExpoLiveAudio] ✅ Recording resumed after interruption")
+        } catch {
+          print("[ExpoLiveAudio] ❌ Failed to resume after interruption: \(error)")
+          sendEvent("onError", ["error": "Failed to resume after interruption: \(error.localizedDescription)"])
+        }
+      } else {
+        print("[ExpoLiveAudio] ℹ️ Audio interruption ended - not resuming")
+      }
+      
+    @unknown default:
+      print("[ExpoLiveAudio] ⚠️ Unknown interruption type")
+    }
+  }
+  
+  private func handleRouteChange(_ notification: Notification) {
+    guard let userInfo = notification.userInfo,
+          let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+          let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+      return
+    }
+    
+    switch reason {
+    case .newDeviceAvailable:
+      print("[ExpoLiveAudio] 🎧 New audio device available (Bluetooth/headphones connected)")
+      
+    case .oldDeviceUnavailable:
+      print("[ExpoLiveAudio] 🎧 Audio device removed (Bluetooth/headphones disconnected)")
+      // Recording will continue using the default device (speaker/mic)
+      
+    case .categoryChange:
+      print("[ExpoLiveAudio] ℹ️ Audio category changed")
+      
+    case .override:
+      print("[ExpoLiveAudio] ℹ️ Audio route override")
+      
+    default:
+      print("[ExpoLiveAudio] ℹ️ Audio route change: \(reason.rawValue)")
+    }
+  }
+  
   // MARK: - Cleanup
   
   private func cleanup() {
     stopRecording()
+    removeInterruptionHandling()
     audioEngine = nil
     inputNode = nil
     audioConverter = nil
@@ -317,3 +463,4 @@ public class ExpoLiveAudioModule: Module {
     print("[ExpoLiveAudio] 🧹 Cleaned up")
   }
 }
+

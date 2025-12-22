@@ -9,10 +9,11 @@ import {
   AudioQuality,
 } from 'expo-audio';
 import { readAsStringAsync } from 'expo-file-system/legacy';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   Platform,
   Pressable,
@@ -96,6 +97,31 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
+  const glowAnim = useRef(new Animated.Value(0)).current;
+
+  // Animate glow effect when speaking
+  useEffect(() => {
+    if (isSpeaking) {
+      const animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(glowAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      animation.start();
+      return () => animation.stop();
+    } else {
+      glowAnim.setValue(0);
+    }
+  }, [isSpeaking, glowAnim]);
 
   const mediaPicker = getMediaPicker();
 
@@ -312,6 +338,16 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // - Android: Uses Intent.ACTION_IMAGE_CAPTURE
   // ─────────────────────────────────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
+    // Check if we already have 4 images
+    if (pendingImages.length >= 4) {
+      Alert.alert(
+        'Image Limit Reached',
+        'You can only attach up to 4 images at a time.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     if (!mediaPicker.isAvailable()) {
       Alert.alert(
         'Camera Unavailable',
@@ -343,7 +379,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       console.error('[MultiModalInput] Camera error:', error);
       Alert.alert('Camera Error', 'Failed to capture image. Please try again.');
     }
-  }, [mediaPicker, onImageSelected]);
+  }, [mediaPicker, onImageSelected, pendingImages]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Gallery Pick
@@ -352,6 +388,16 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // - Android: Uses Intent.ACTION_PICK or document picker
   // ─────────────────────────────────────────────────────────────────────────────
   const handleGalleryPress = useCallback(async () => {
+    // Check if we already have 4 images
+    if (pendingImages.length >= 4) {
+      Alert.alert(
+        'Image Limit Reached',
+        'You can only attach up to 4 images at a time.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     if (!mediaPicker.isAvailable()) {
       Alert.alert(
         'Gallery Unavailable',
@@ -383,7 +429,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       console.error('[MultiModalInput] Gallery error:', error);
       Alert.alert('Gallery Error', 'Failed to select image. Please try again.');
     }
-  }, [mediaPicker, onImageSelected]);
+  }, [mediaPicker, onImageSelected, pendingImages]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -456,7 +502,28 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             {isTranscribing ? (
               <ActivityIndicator size="small" color="#ffffff" />
             ) : isSpeaking ? (
-              <Ionicons name="stop" size={18} color="#ffffff" />
+              <View style={styles.pauseIconContainer}>
+                <Animated.View
+                  style={[
+                    styles.pauseGlow,
+                    {
+                      opacity: glowAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.3, 0.6],
+                      }),
+                      transform: [
+                        {
+                          scale: glowAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [1, 1.2],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                />
+                <Ionicons name="pause" size={18} color="#ffffff" />
+              </View>
             ) : (
               <Ionicons name="mic" size={18} color={isRecording ? '#ffffff' : '#6b7280'} />
             )}
@@ -631,6 +698,27 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 12,
     color: '#6b7280',
+  },
+  pauseIconContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 18,
+    height: 18,
+  },
+  pauseGlow: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#0a7ea4',
+    opacity: 0.3,
+    // Animation for glowing effect
+    shadowColor: '#0a7ea4',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    elevation: 8,
   },
 });
 
