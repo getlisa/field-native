@@ -30,6 +30,8 @@ export interface TranscriptionViewProps {
   jobStatus?: 'scheduled' | 'ongoing' | 'completed';
   isViewer?: boolean;
   isAssigned?: boolean;
+  scrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void } | null>; // For auto-scroll
+  isLoadingDbTurns?: boolean; // Loading state for DB turns
 }
 
 interface EnhancedTurn extends DialogueTurn {
@@ -208,12 +210,23 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   jobStatus,
   isViewer = false,
   isAssigned = false,
+  scrollRef,
+  isLoadingDbTurns = false,
 }) => {
   const { colors } = useTheme();
   const flatListRef = useRef<FlatList>(null);
+  
+  // Expose scrollToEnd method via ref for auto-scroll
+  React.useImperativeHandle(scrollRef, () => ({
+    scrollToEnd: (options?: { animated?: boolean }) => {
+      flatListRef.current?.scrollToEnd(options);
+    },
+  }), []);
 
-  // State for completed job features
-  const [enhancedTurns, setEnhancedTurns] = useState<EnhancedTurn[]>(initialTurns);
+  // Use turns directly from props (already reconciled by parent)
+  const enhancedTurns: EnhancedTurn[] = initialTurns;
+  
+  // State for completed job audio features (ONLY fetch audio, not turns)
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
@@ -269,55 +282,45 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     };
   }, []);
 
-  // Load completed job data (transcription turns + audio)
+  // Load audio data for completed jobs (turns come from props)
   useEffect(() => {
     if (!isCompleted || !visitSessionId) {
-      setEnhancedTurns(initialTurns);
+      // Clear audio state for non-completed jobs
+      setAudioUrl(null);
+      setAudioLoading(false);
       return;
     }
 
-    const loadCompletedData = async () => {
+    const loadAudioData = async () => {
       try {
         setAudioLoading(true);
 
-        const [turnsData, audioData] = await Promise.all([
-          jobService.getTurnsByVisitSessionId(visitSessionId),
-          jobService.getVisitSessionAudio(visitSessionId).catch(() => null), // Audio might not exist
-        ]);
-
-        // Map TranscriptionTurn to EnhancedTurn
-        const mapped: EnhancedTurn[] = turnsData.map((turn) => ({
-          id: turn.id.toString(),
-          speaker: (turn.speaker === 'technician' ? 'Technician' : 'Customer') as 'Technician' | 'Customer',
-          text: turn.text,
-          timestamp: new Date(turn.created_at),
-          word_timestamps: turn.meta_data?.word_timestamps || [],
-          start_timestamp_ms: Number(turn.start_timestamp_ms),
-          end_timestamp_ms: Number(turn.end_timestamp_ms),
-        }));
-
-        setEnhancedTurns(mapped);
+        // Only fetch audio data (turns already provided by parent)
+        const audioData = await jobService.getVisitSessionAudio(visitSessionId).catch(() => null);
 
         if (audioData?.presigned_url) {
           setAudioUrl(audioData.presigned_url);
           setAudioStartTimeMs(Number(audioData.start_timestamp_ms));
+          if (__DEV__) {
+            console.log('[TranscriptionView] Audio loaded for completed job');
+          }
+        } else {
+          if (__DEV__) {
+            console.log('[TranscriptionView] No audio available for completed job');
+          }
         }
       } catch (err) {
-        console.error('[TranscriptionView] Error loading completed data:', err);
+        console.error('[TranscriptionView] Error loading audio:', err);
       } finally {
         setAudioLoading(false);
       }
     };
 
-    loadCompletedData();
+    loadAudioData();
   }, [isCompleted, visitSessionId]);
 
-  // Update turns for live jobs
-  useEffect(() => {
-    if (!isCompleted) {
-      setEnhancedTurns(initialTurns);
-    }
-  }, [initialTurns, isCompleted]);
+  // No need to sync turns - we use initialTurns directly from props
+  // Turns are already reconciled by parent (app/jobs/[id].tsx)
 
   // Update current time from player
   useEffect(() => {

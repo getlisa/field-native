@@ -19,6 +19,8 @@ export const TranscriptionTab: React.FC = () => {
     isJobAssignedToCurrentUser,
     isViewer,
     visitSessionId,
+    transcriptionScrollRef,
+    isLoadingDbTurns,
   } = useJobDetailContext();
   const { colors } = useTheme();
 
@@ -33,6 +35,8 @@ export const TranscriptionTab: React.FC = () => {
       jobStatus={job?.status}
       isViewer={isViewer}
       isAssigned={isJobAssignedToCurrentUser}
+      scrollRef={transcriptionScrollRef}
+      isLoadingDbTurns={isLoadingDbTurns}
     />
   );
 };

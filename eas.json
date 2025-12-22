@@ -13,15 +13,36 @@
     },
     "preview": {
       "distribution": "internal",
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "preview": {
+      "ios": {
+        "appleId": "ashraf.shaik@zentrades.pro",
+        "ascAppId": "6756868722",
+        "appleTeamId": "TS3BFX5G72"
+      }
+    },
+    "production": {
+      "ios": {
+        "appleId": "ashraf.shaik@zentrades.pro",
+        "ascAppId": "6756868722",
+        "appleTeamId": "TS3BFX5G72"
+      }
+    }
   }
 }

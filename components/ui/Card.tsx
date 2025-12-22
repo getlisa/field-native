@@ -21,18 +21,20 @@ interface BaseCardProps {
   padding?: keyof typeof Spacing | number;
   /** Custom style */
   style?: StyleProp<ViewStyle>;
-  /** Children */
-  children: React.ReactNode;
 }
 
-interface StaticCardProps extends BaseCardProps, Omit<ViewProps, 'style'> {
+interface StaticCardProps extends BaseCardProps, Omit<ViewProps, 'style' | 'children'> {
   /** Not pressable */
   pressable?: false;
+  /** Children */
+  children?: React.ReactNode;
 }
 
-interface PressableCardProps extends BaseCardProps, Omit<PressableProps, 'style'> {
+interface PressableCardProps extends BaseCardProps, Omit<PressableProps, 'style' | 'children'> {
   /** Pressable card */
   pressable: true;
+  /** Children */
+  children?: React.ReactNode;
 }
 
 type CardProps = StaticCardProps | PressableCardProps;

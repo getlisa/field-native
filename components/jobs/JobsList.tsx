@@ -424,14 +424,14 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ flex: 1, justifyContent: 'flex-end' }}
           >
-            <Pressable
+          <Pressable
               style={[
                 styles.modalContent,
                 { backgroundColor: colors.backgroundSecondary },
                 Platform.OS === 'android' && keyboardHeight > 0 && { paddingBottom: keyboardHeight },
               ]}
-              onPress={(e) => e.stopPropagation()}
-            >
+            onPress={(e) => e.stopPropagation()}
+          >
             <ThemedText type="subtitle" style={styles.modalTitle}>
               Add New Service Job
             </ThemedText>
@@ -542,7 +542,7 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
                 Create Job
               </Button>
             </View>
-            </Pressable>
+          </Pressable>
           </KeyboardAvoidingView>
         </Pressable>
       </Modal>

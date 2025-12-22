@@ -1,0 +1,10 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "expo-pcm-audio-player": ["../src/index"],
+      "expo-pcm-audio-player/*": ["../src/*"]
+    }
+  }
+}

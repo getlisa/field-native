@@ -178,7 +178,7 @@ class PermissionService implements IPermissionService {
             // Note: This permission might not be in PermissionsAndroid constants
             // It's declared in AndroidManifest and checked at runtime
             const hasPermission = await PermissionsAndroid.check(
-              'android.permission.FOREGROUND_SERVICE_MICROPHONE'
+              'android.permission.FOREGROUND_SERVICE_MICROPHONE' as any
             ).catch(() => {
               // If check fails, try requesting it
               return false;

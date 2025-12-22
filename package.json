@@ -39,6 +39,7 @@
     "expo-linking": "~8.0.11",
     "expo-notifications": "~0.32.15",
     "expo-pcm-audio-player": "file:./modules/expo-pcm-audio-player",
+    "expo-live-audio": "file:./modules/expo-live-audio",
     "expo-router": "~6.0.21",
     "expo-secure-store": "^15.0.8",
     "expo-splash-screen": "~31.0.13",
@@ -82,6 +83,11 @@
       "configSyncCheck": {
         "ignore": true
       }
+    },
+    "autolinking": {
+      "searchPaths": [
+        "./modules"
+      ]
     }
   }
 }

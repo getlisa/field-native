@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
-// Import native module using the new requireNativeModule API
+// Import native module using the new requireNativeModule API (from properly scaffolded module)
 // The module will automatically use the web stub on web platform
 import ExpoPcmAudioPlayer from 'expo-pcm-audio-player';
 
@@ -105,7 +105,7 @@ export function useAudioStreamManager(
     try {
       // Stream directly to native module (no WAV conversion needed)
       await ExpoPcmAudioPlayer.streamChunk(base64Data);
-      
+
       // Auto-start playback if not already playing
       if (!isPlayingRef.current && !isStopped.current) {
         await ExpoPcmAudioPlayer.start();

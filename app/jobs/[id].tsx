@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useNavigation, usePreventRemove } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -32,8 +33,9 @@ import { useJobDetails } from '@/hooks/useJobDetails';
 import { useJobQuery } from '@/hooks/useJobQuery';
 import { useTranscription } from '@/hooks/useTranscription';
 import { useSubscriberTranscription } from '@/hooks/useSubscriberTranscription';
+import { useTurnManagement } from '@/hooks/useTurnManagement';
+import { useSwipeNavigation } from '@/hooks/useSwipeNavigation';
 import { useAuthStore } from '@/store/useAuthStore';
-import { jobService, type TranscriptionTurn } from '@/services/jobService';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
 import {
@@ -66,99 +68,19 @@ export default function JobDetailPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('transcription');
   const [actionLoading, setActionLoading] = useState(false);
   const [suppressAutoTranscription, setSuppressAutoTranscription] = useState(false);
+  
+  // Track if we're allowing navigation (e.g., from notification click)
+  const allowNavigationRef = useRef(false);
 
   // Ordered tabs for swipe navigation
   const tabOrder: TabKey[] = ['transcription', 'askAI', 'checklist', 'insights'];
 
-  // Track current tab in a ref so panResponder always has latest value
-  const activeTabRef = useRef<TabKey>(activeTab);
-  useEffect(() => {
-    activeTabRef.current = activeTab;
-  }, [activeTab]);
-
-  // Animated values for smooth slide transitions
-  const screenWidth = Dimensions.get('window').width;
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const panX = useRef(new Animated.Value(0)).current;
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-
-  // Handle tab change with animation
-  const changeTab = useCallback((newTab: TabKey) => {
-    const oldIndex = tabOrder.indexOf(activeTabRef.current);
-    const newIndex = tabOrder.indexOf(newTab);
-    const direction = newIndex > oldIndex ? -1 : 1;
-
-    // Animate slide and fade
-    Animated.parallel([
-      Animated.timing(slideAnim, {
-        toValue: direction * screenWidth * 0.3, // Slide 30% of screen
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      // Change tab while invisible
-      setActiveTab(newTab);
-      slideAnim.setValue(direction * -screenWidth * 0.3); // Start from opposite side
-      
-      // Fade in new content
-      Animated.parallel([
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-  }, [screenWidth, slideAnim, fadeAnim, tabOrder]);
-
-  // Handle horizontal swipes to switch tabs
-  const panResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        // Only respond to horizontal swipes
-        return Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-      },
-      onPanResponderMove: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        // Update pan position for live feedback
-        panX.setValue(gestureState.dx);
-      },
-      onPanResponderRelease: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        const SWIPE_THRESHOLD = 50;
-        const currentTab = activeTabRef.current;
-        const currentIndex = tabOrder.indexOf(currentTab);
-        
-        // Reset pan animation
-        Animated.spring(panX, {
-          toValue: 0,
-          useNativeDriver: true,
-        }).start();
-
-        if (gestureState.dx < -SWIPE_THRESHOLD) {
-          // Swipe LEFT → Next tab
-          if (currentIndex < tabOrder.length - 1) {
-            const nextTab = tabOrder[currentIndex + 1];
-            changeTab(nextTab);
-          }
-        } else if (gestureState.dx > SWIPE_THRESHOLD) {
-          // Swipe RIGHT → Previous tab
-          if (currentIndex > 0) {
-            const prevTab = tabOrder[currentIndex - 1];
-            changeTab(prevTab);
-          }
-        }
-      },
-    })
-  ).current;
+  // Use reusable swipe navigation hook
+  const { panResponder, panX, slideAnim, fadeAnim } = useSwipeNavigation({
+    tabs: tabOrder,
+    activeTab,
+    onTabChange: setActiveTab,
+  });
 
   const { job, visitSession, loading, error, fetchJob, startJob, completeJob } = useJobDetails();
 
@@ -169,6 +91,13 @@ export default function JobDetailPage() {
     if (!job || !currentUser?.id) return false;
     return job.technician_id === currentUser.id;
   }, [job, currentUser?.id]);
+
+  // Load turns from DB and handle reconciliation
+  const { dbTurns, isLoadingDbTurns, reconcileTurns } = useTurnManagement({
+    visitSessionId: visitSession?.id,
+    jobStatus: job?.status,
+    isEnabled: Boolean(job?.status === 'ongoing' || job?.status === 'completed'),
+  });
 
   // Track app state to determine if we should send notifications
   const appState = useRef(AppState.currentState);
@@ -187,7 +116,7 @@ export default function JobDetailPage() {
   }, []);
 
   const {
-    turns,
+    turns: wsTurns,
     isConnected,
     isConnecting,
     isRecording,
@@ -197,6 +126,16 @@ export default function JobDetailPage() {
   } = useTranscription({
     jobId: id, // Pass job ID for deep linking from background service notification
     onProactiveSuggestions: (suggestions: ProactiveSuggestionsMessage) => {
+      if (__DEV__) {
+        console.log('[JobDetail] 📬 Proactive suggestions received:', {
+          missedOpportunities: suggestions.missedOpportunities?.length || 0,
+          checklistDetected: suggestions.checklistDetected,
+          appState: appState.current,
+          isAssignedToJob,
+          hasJob: !!job,
+        });
+      }
+
       // Invalidate job query when proactive suggestions are received
       invalidateJob();
 
@@ -208,8 +147,7 @@ export default function JobDetailPage() {
       if (
         job &&
         isAssignedToJob &&
-        suggestions.missedOpportunities?.length > 0 && // Only for missedOpportunities
-        appState.current !== 'active'
+        suggestions.missedOpportunities?.length > 0 // Only for missedOpportunities
       ) {
         const notificationService = getNotificationService();
         
@@ -220,13 +158,32 @@ export default function JobDetailPage() {
           job.job_target_name || 'Job'
         );
 
-        // Send notifications for missed opportunities only
+        if (__DEV__) {
+          console.log('[JobDetail] 📤 Sending proactive suggestion notifications:', {
+            count: notificationData.length,
+            appState: appState.current,
+            isBackground: appState.current !== 'active',
+          });
+        }
+
+        // Send notifications (will be shown or delivered based on app state)
         notificationData.forEach((data) => {
           notificationService
             .sendProactiveSuggestionNotification(data)
+            .then(() => {
+              if (__DEV__) {
+                console.log('[JobDetail] ✅ Proactive suggestion notification sent:', data.suggestion);
+              }
+            })
             .catch((error) => {
-              console.error('[JobDetail] Error sending proactive suggestion notification:', error);
+              console.error('[JobDetail] ❌ Error sending proactive suggestion notification:', error);
             });
+        });
+      } else if (__DEV__) {
+        console.log('[JobDetail] ⏭️ Skipping proactive suggestion notification:', {
+          hasJob: !!job,
+          isAssignedToJob,
+          hasMissedOpportunities: (suggestions.missedOpportunities?.length || 0) > 0,
         });
       }
     },
@@ -273,22 +230,21 @@ export default function JobDetailPage() {
     };
   }, [isRecording, isAssignedToJob, id, job?.job_target_name]);
 
-  // State for API-fetched turns (when websocket is not active)
-  const [apiTurns, setApiTurns] = useState<DialogueTurn[]>([]);
-  const [loadingApiTurns, setLoadingApiTurns] = useState(false);
-  
   // Get the first transcription session for heartbeat check
   const firstTranscriptionSession = job?.visit_sessions?.transcription_sessions?.[0];
   const lastHeartbeatAt = firstTranscriptionSession?.last_heartbeat_at || null;
 
   // Subscriber transcription for non-assigned viewers
   const {
-    turns: subscriberTurns,
+    turns: subscriberWsTurns,
     isConnected: isSubscriberConnected,
     isReceivingAudio,
+    isReceivingTurns,
+    isRetrying: isSubscriberRetrying,
     isAudioEnabled,
     toggleAudio,
     error: subscriberError,
+    setApiTurns: setViewerApiTurns,
   } = useSubscriberTranscription({
     transcriptionSessionId: firstTranscriptionSession?.id || null,
     isJobOngoing: job?.status === 'ongoing',
@@ -296,86 +252,68 @@ export default function JobDetailPage() {
     lastHeartbeatAt,
   });
 
-  // Fetch turns from API when websocket is not active
-  useEffect(() => {
-    const fetchTurnsFromAPI = async () => {
-      // Only fetch if:
-      // 1. Job is ongoing
-      // 2. Visit session exists
-      // 3. Not connected via websocket (for assigned user) or not receiving audio (for viewer)
-      if (
-        job?.status === 'ongoing' &&
-        visitSession?.id &&
-        ((isAssignedToJob && !isConnected && !isRecording) ||
-         (!isAssignedToJob && !isReceivingAudio && !isSubscriberConnected))
-      ) {
-        setLoadingApiTurns(true);
-        try {
-          const apiTurnsData = await jobService.getTurnsByVisitSessionId(visitSession.id);
-          
-          // Convert TranscriptionTurn[] to DialogueTurn[]
-          const convertedTurns: DialogueTurn[] = apiTurnsData.map((turn: TranscriptionTurn) => ({
-            id: turn.id?.toString() || turn.provider_result_id,
-            resultId: turn.provider_result_id,
-            speaker: turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician'),
-            text: turn.text,
-            timestamp: new Date(turn.created_at),
-            isPartial: false,
-            turn_index: turn.turn_index,
-          }));
-          
-          setApiTurns(convertedTurns);
-        } catch (error) {
-          console.error('[JobDetail] Error fetching turns from API:', error);
-        } finally {
-          setLoadingApiTurns(false);
-        }
-      } else {
-        // Clear API turns when websocket is active
-        setApiTurns([]);
-      }
-    };
-
-    fetchTurnsFromAPI();
+  // Reconcile DB turns with WebSocket turns
+  const effectiveTurns = useMemo(() => {
+    const wsSource = isAssignedToJob ? wsTurns : subscriberWsTurns;
     
-    // Refresh every 5 seconds if websocket is not active
-    const interval = setInterval(() => {
-      if (
-        job?.status === 'ongoing' &&
-        visitSession?.id &&
-        ((isAssignedToJob && !isConnected && !isRecording) ||
-         (!isAssignedToJob && !isReceivingAudio && !isSubscriberConnected))
-      ) {
-        fetchTurnsFromAPI();
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [
-    job?.status,
-    visitSession?.id,
-    isAssignedToJob,
-    isConnected,
-    isRecording,
-    isReceivingAudio,
-    isSubscriberConnected,
-  ]);
-
-  // Use subscriber turns for viewers, regular turns for assigned technician, or API turns as fallback
-  const effectiveTurns = isAssignedToJob 
-    ? (isConnected || isRecording ? turns : apiTurns)
-    : (isReceivingAudio || isSubscriberConnected ? subscriberTurns : apiTurns);
-  const effectiveIsConnected = isAssignedToJob ? isConnected : isSubscriberConnected;
+    // If we have WebSocket data, reconcile with DB
+    if (wsSource.length > 0) {
+      return reconcileTurns(wsSource);
+    }
+    
+    // Fallback to DB turns if no WebSocket data
+    return dbTurns;
+  }, [isAssignedToJob, wsTurns, subscriberWsTurns, dbTurns, reconcileTurns]);
+  
+  // For viewers: show "live" when receiving cached_turns from WebSocket
+  // For assigned users: show "live" when connected
+  const effectiveIsConnected = isAssignedToJob 
+    ? isConnected 
+    : (isSubscriberConnected && isReceivingTurns);
+  const effectiveIsConnecting = isAssignedToJob ? isConnecting : isSubscriberRetrying;
   const effectiveError = isAssignedToJob ? transcriptionError : subscriberError;
 
   // Track previous job ID to detect if we're navigating to a different job
   const previousJobIdRef = useRef<string | undefined>(undefined);
+  
+  // Ref for TranscriptionTab to enable auto-scroll
+  const transcriptionScrollRef = useRef<{ scrollToEnd: (options?: { animated?: boolean }) => void } | null>(null);
 
   useEffect(() => {
     if (id) {
+      // Reset navigation flag when arriving at this page
+      allowNavigationRef.current = false;
+      if (__DEV__) {
+        console.log('[JobDetail] 📍 Navigated to job page, reset allowNavigation flag');
+      }
       fetchJob(id);
     }
   }, [id, fetchJob]);
+  
+  // Auto-scroll to latest turn for ongoing jobs
+  // Uses the last turn's ID and text to detect any changes (not just length)
+  const lastTurnSignature = useMemo(() => {
+    if (effectiveTurns.length === 0) return null;
+    const lastTurn = effectiveTurns[effectiveTurns.length - 1];
+    return `${lastTurn.id || lastTurn.resultId}-${lastTurn.text.substring(0, 50)}-${lastTurn.timestamp?.getTime()}`;
+  }, [effectiveTurns]);
+  
+  useEffect(() => {
+    if (
+      job?.status === 'ongoing' &&
+      effectiveTurns.length > 0 &&
+      activeTab === 'transcription' &&
+      transcriptionScrollRef.current &&
+      lastTurnSignature
+    ) {
+      // Small delay to ensure content is rendered
+      const timeout = setTimeout(() => {
+        transcriptionScrollRef.current?.scrollToEnd?.({ animated: true });
+      }, 100);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [lastTurnSignature, job?.status, activeTab, effectiveTurns.length]);
 
   // Remove auto-start transcription - only start when technician clicks start
   // (Removed useEffect that auto-started transcription)
@@ -422,13 +360,27 @@ export default function JobDetailPage() {
       const permissionService = getPermissionService();
       const permissions = await permissionService.checkAllPermissions();
 
-      // Request missing permissions
+      // Request microphone permission (REQUIRED)
       if (!permissions.microphone) {
         const micPermission = await permissionService.requestMicrophonePermission();
         if (!micPermission.granted) {
           Alert.alert(
             'Microphone Permission Required',
             'This job requires microphone access for live transcription. Please enable it in Settings.',
+            [{ text: 'OK' }]
+          );
+          setActionLoading(false);
+          return;
+        }
+      }
+
+      // Request notification permission (REQUIRED)
+      if (!permissions.notifications) {
+        const notifPermission = await permissionService.requestNotificationPermission();
+        if (!notifPermission.granted) {
+          Alert.alert(
+            'Notification Permission Required',
+            'This job requires notification access to alert you about important updates. Please enable it in Settings.',
             [{ text: 'OK' }]
           );
           setActionLoading(false);
@@ -449,6 +401,7 @@ export default function JobDetailPage() {
         }
       }
 
+      // Both microphone and notification permissions are granted - proceed with job start
       const session = await startJob(id);
       if (session?.id && job?.company_id) {
         // Start transcription immediately after starting job
@@ -596,7 +549,50 @@ export default function JobDetailPage() {
     return true; // Prevent default back action since we handled it
   }, [isRecording, isAssignedToJob, confirmCompleteJob, router]);
 
-  // Handle Android back button
+  // Prevent navigation when recording (using usePreventRemove for proper native-stack support)
+  // But allow navigation if it's from a notification or user confirmed completion
+  usePreventRemove(isRecording && isAssignedToJob && !allowNavigationRef.current, ({ data }) => {
+    if (__DEV__) {
+      console.log('[JobDetail] 🚫 Navigation prevented - recording in progress', {
+        isRecording,
+        isAssignedToJob,
+        allowNavigation: allowNavigationRef.current,
+      });
+    }
+
+    Alert.alert(
+      'Recording in Progress',
+      'You have an active recording. Do you want to complete the job before leaving?',
+      [
+        {
+          text: 'Keep Recording',
+          style: 'cancel',
+          onPress: () => {
+            if (__DEV__) {
+              console.log('[JobDetail] User chose to keep recording');
+            }
+          },
+        },
+        {
+          text: 'Complete Job',
+          style: 'destructive',
+          onPress: () => {
+            if (__DEV__) {
+              console.log('[JobDetail] User chose to complete job before leaving');
+            }
+            // Set flag to indicate this is a user action from confirmation dialog
+            completeJobUserActionRef.current = true;
+            // Allow navigation after completion
+            allowNavigationRef.current = true;
+            confirmCompleteJob();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  });
+
+  // Handle Android back button (as additional fallback)
   useEffect(() => {
     if (Platform.OS === 'android') {
       const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -619,12 +615,14 @@ export default function JobDetailPage() {
       canViewTranscription: Boolean(isAssignedToJob || job?.status === 'completed'),
       turns: effectiveTurns,
       isConnected: effectiveIsConnected,
-      isConnecting,
+      isConnecting: effectiveIsConnecting,
       isRecording,
       transcriptionError: effectiveError,
       startTranscription,
       stopTranscription,
       visitSessionId: visitSession?.id || job?.visit_sessions?.id,
+      transcriptionScrollRef, // Add scroll ref for auto-scroll
+      isLoadingDbTurns, // Add loading state for DB turns
     }),
     [
       job,
@@ -632,12 +630,13 @@ export default function JobDetailPage() {
       isAssignedToJob,
       effectiveTurns,
       effectiveIsConnected,
-      isConnecting,
+      effectiveIsConnecting,
       isRecording,
       effectiveError,
       startTranscription,
       stopTranscription,
       visitSession?.id,
+      isLoadingDbTurns,
     ]
   );
 
@@ -852,7 +851,9 @@ export default function JobDetailPage() {
               )}
               {job.status === 'ongoing' && (
                 <View style={styles.liveStatusContainer}>
-                  {isReceivingAudio ? (
+                  {/* For viewers: show LIVE when receiving cached_turns OR audio */}
+                  {/* For assigned users: show LIVE when recording */}
+                  {((!isAssignedToJob && (isReceivingTurns || isReceivingAudio)) || (isAssignedToJob && isRecording)) ? (
                     <>
                       <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420' }]}>
                         <View style={styles.liveDot} />
@@ -860,22 +861,24 @@ export default function JobDetailPage() {
                           LIVE
                         </ThemedText>
                       </View>
-                      {/* Audio toggle disabled for now - will be re-enabled later */}
-                      <Pressable
-                        onPress={toggleAudio}
-                        style={[
-                          styles.audioToggle,
-                          {
-                            backgroundColor: isAudioEnabled ? colors.primary : colors.backgroundSecondary,
-                          },
-                        ]}
-                      >
-                        <Ionicons
-                          name={isAudioEnabled ? 'volume-high' : 'volume-mute'}
-                          size={20}
-                          color={isAudioEnabled ? '#fff' : colors.iconSecondary}
-                        />
-                      </Pressable>
+                      {/* Audio toggle for viewers when receiving audio */}
+                      {!isAssignedToJob && isReceivingAudio && (
+                        <Pressable
+                          onPress={toggleAudio}
+                          style={[
+                            styles.audioToggle,
+                            {
+                              backgroundColor: isAudioEnabled ? colors.primary : colors.backgroundSecondary,
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name={isAudioEnabled ? 'volume-high' : 'volume-mute'}
+                            size={20}
+                            color={isAudioEnabled ? '#fff' : colors.iconSecondary}
+                          />
+                        </Pressable>
+                      )}
                     </>
                   ) : (
                     <View style={[styles.statusBadge, { backgroundColor: '#f59e0b20' }]}>

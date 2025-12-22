@@ -22,15 +22,15 @@ export function initializeNotificationHandler(): void {
   if (notificationHandlerInitialized) return;
   
   try {
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
         shouldShowBanner: true,
         shouldShowList: true,
-      }),
-    });
+  }),
+});
     notificationHandlerInitialized = true;
   } catch (error) {
     console.error('[NotificationService] Error initializing notification handler:', error);

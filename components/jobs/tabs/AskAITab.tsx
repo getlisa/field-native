@@ -308,15 +308,15 @@ export const AskAITab: React.FC = () => {
                         { ...finalAi, id: finalAi.id || aiMessageId },
                       ]);
                     } else {
-                      // Finalize with complete server message
-                      const finalAi = mapCopilotMessageToUi(event.data);
-                      setMessages((prev) =>
-                        prev.map((msg) =>
-                          msg.id === aiMessageId
-                            ? { ...finalAi, id: finalAi.id || aiMessageId }
-                            : msg
-                        )
-                      );
+                    // Finalize with complete server message
+                    const finalAi = mapCopilotMessageToUi(event.data);
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === aiMessageId
+                          ? { ...finalAi, id: finalAi.id || aiMessageId }
+                          : msg
+                      )
+                    );
                     }
                   } else if (event.type === 'error') {
                     console.warn('[AskAI] Stream error:', event.error);

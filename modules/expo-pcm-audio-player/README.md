@@ -1,38 +1,35 @@
 # expo-pcm-audio-player
 
-Native PCM audio streaming module for Expo. Streams base64-encoded PCM16 audio chunks in real-time with gapless playback on iOS and Android.
+Audio stream playback
 
-## Features
+# API documentation
 
-- ✅ Gapless playback using native audio APIs
-- ✅ Low latency streaming
-- ✅ Direct PCM16 support (no WAV conversion needed)
-- ✅ iOS: AVAudioEngine + AVAudioPlayerNode
-- ✅ Android: AudioTrack with coroutine-based playback
+- [Documentation for the latest stable release](https://docs.expo.dev/versions/latest/sdk/pcm-audio-player/)
+- [Documentation for the main branch](https://docs.expo.dev/versions/unversioned/sdk/pcm-audio-player/)
 
-## Installation
+# Installation in managed Expo projects
 
-```bash
-npm install ./modules/expo-pcm-audio-player
+For [managed](https://docs.expo.dev/archive/managed-vs-bare/) Expo projects, please follow the installation instructions in the [API documentation for the latest stable release](#api-documentation). If you follow the link and there is no documentation available then this library is not yet usable within managed projects &mdash; it is likely to be included in an upcoming Expo SDK release.
+
+# Installation in bare React Native projects
+
+For bare React Native projects, you must ensure that you have [installed and configured the `expo` package](https://docs.expo.dev/bare/installing-expo-modules/) before continuing.
+
+### Add the package to your npm dependencies
+
+```
+npm install expo-pcm-audio-player
 ```
 
-## Usage
+### Configure for Android
 
-```typescript
-import ExpoPcmAudioPlayer from 'expo-pcm-audio-player';
 
-// Initialize
-await ExpoPcmAudioPlayer.initialize({
-  sampleRate: 16000,
-  channels: 1,
-  bitDepth: 16,
-});
 
-// Stream audio chunks
-await ExpoPcmAudioPlayer.streamChunk(base64PcmData);
 
-// Control playback
-await ExpoPcmAudioPlayer.start();
-await ExpoPcmAudioPlayer.pause();
-await ExpoPcmAudioPlayer.stop();
-```
+### Configure for iOS
+
+Run `npx pod-install` after installing the npm package.
+
+# Contributing
+
+Contributions are very welcome! Please refer to guidelines described in the [contributing guide]( https://github.com/expo/expo#contributing).

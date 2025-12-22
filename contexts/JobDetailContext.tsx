@@ -18,6 +18,8 @@ interface JobDetailContextValue {
   startTranscription: (visitSessionId: string, companyId: number) => void;
   stopTranscription: () => void;
   visitSessionId?: string;
+  transcriptionScrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void } | null>; // For auto-scroll
+  isLoadingDbTurns?: boolean; // Loading state for DB turns
 }
 
 const JobDetailContext = createContext<JobDetailContextValue | undefined>(undefined);

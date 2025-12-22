@@ -23,10 +23,15 @@ try {
   console.warn('[Audio] react-native-background-actions not available (requires dev build)');
 }
 
+// Prefer native ExpoLiveAudio wrapper, fallback to original lib if needed
 try {
-  LiveAudioStream = require('react-native-live-audio-stream').default;
+  LiveAudioStream = require('@/native/ExpoLiveAudio').default;
 } catch {
-  console.warn('[Audio] react-native-live-audio-stream not available (requires dev build)');
+  try {
+    LiveAudioStream = require('react-native-live-audio-stream').default;
+  } catch {
+    console.warn('[Audio] react-native-live-audio-stream not available (requires dev build)');
+  }
 }
 
 // Helper function to create background task options with job ID
@@ -42,13 +47,13 @@ const createBackgroundTaskOptions = (jobId?: string) => {
   }
   
   return {
-    taskName: 'AudioRecording',
-    taskTitle: 'Recording Audio',
-    taskDesc: 'Transcribing your conversation in real-time',
-    taskIcon: { name: 'ic_launcher', type: 'mipmap' },
-    color: '#0a7ea4',
+  taskName: 'AudioRecording',
+  taskTitle: 'Recording Audio',
+  taskDesc: 'Transcribing your conversation in real-time',
+  taskIcon: { name: 'ic_launcher', type: 'mipmap' },
+  color: '#0a7ea4',
     linkingURI,
-    parameters: { delay: 1000 },
+  parameters: { delay: 1000 },
   };
 };
 

@@ -1,23 +1,43 @@
 {
   "name": "expo-pcm-audio-player",
-  "version": "1.0.0",
-  "description": "Native PCM audio streaming for Expo",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "version": "0.1.0",
+  "description": "Audio stream playback",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
   "scripts": {
     "build": "expo-module build",
-    "clean": "expo-module clean"
+    "clean": "expo-module clean",
+    "lint": "expo-module lint",
+    "test": "expo-module test",
+    "prepare": "expo-module prepare",
+    "prepublishOnly": "expo-module prepublishOnly",
+    "expo-module": "expo-module",
+    "open:ios": "xed example/ios",
+    "open:android": "open -a \"Android Studio\" example/android"
   },
   "keywords": [
+    "react-native",
     "expo",
-    "audio",
-    "streaming",
-    "pcm"
+    "expo-pcm-audio-player",
+    "ExpoPcmAudioPlayer"
   ],
-  "peerDependencies": {
-    "expo": "*"
+  "repository": "https://github.com/ashrafshaik543/expo-pcm-audio-player",
+  "bugs": {
+    "url": "https://github.com/ashrafshaik543/expo-pcm-audio-player/issues"
   },
+  "author": "Ashraf Shaik <ashraf.shaik@zentrades.pro> (https://github.com/ashrafshaik543)",
+  "license": "MIT",
+  "homepage": "https://github.com/ashrafshaik543/expo-pcm-audio-player#readme",
+  "dependencies": {},
   "devDependencies": {
-    "expo-module-scripts": "^5.0.8"
+    "@types/react": "~19.1.0",
+    "expo-module-scripts": "^5.0.8",
+    "expo": "^54.0.27",
+    "react-native": "0.81.5"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
   }
 }

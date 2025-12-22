@@ -135,8 +135,8 @@ export default function HomeScreen() {
               styles.loginFormContainer,
               Platform.OS === 'android' && keyboardHeight > 0 && { marginBottom: keyboardHeight },
             ]}
-          >
-            <LoginForm
+        >
+          <LoginForm
             email={email}
             password={password}
             onEmailChange={setEmail}

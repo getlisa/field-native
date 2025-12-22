@@ -287,7 +287,14 @@ export default function RootLayout() {
             <Stack>
               <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
               <Stack.Screen name="jobs/index" options={{ headerShown: false, title: 'Jobs' }} />
-              <Stack.Screen name="jobs/[id]" options={{ headerShown: false }} />
+              <Stack.Screen 
+                name="jobs/[id]" 
+                options={{ 
+                  headerShown: false,
+                  // Disable iOS native back button menu for better prevention control
+                  headerBackButtonMenuEnabled: false,
+                }} 
+              />
               <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
             </Stack>
             {/* StatusBar that responds to app theme (not system theme) */}

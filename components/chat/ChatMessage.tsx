@@ -188,9 +188,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
                           <ActivityIndicator size="small" color={colors.primary} />
                         </View>
                       )}
-                      <Image
+                    <Image
                         source={{ uri: getImageUrl(attachment) || '' }}
-                        style={styles.messageImage}
+                      style={styles.messageImage}
                         contentFit="contain"
                         transition={200}
                         cachePolicy="memory-disk"
@@ -198,8 +198,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
                         recyclingKey={attachment.id}
                         onLoadStart={() => handleImageLoadStart(attachment.id)}
                         onLoadEnd={() => handleImageLoadEnd(attachment.id)}
-                        onError={() => handleImageError(attachment.id)}
-                      />
+                      onError={() => handleImageError(attachment.id)}
+                    />
                     </View>
                   )}
                 </View>

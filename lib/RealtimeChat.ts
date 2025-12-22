@@ -23,6 +23,7 @@ export interface WordTimestamp {
 export interface DialogueTurn {
   id?: string;
   resultId?: string;
+  turn_id?: number; // Primary key for reconciliation (from DB and WebSocket)
   speaker: 'Technician' | 'Customer';
   text: string;
   timestamp: Date;
@@ -290,6 +291,15 @@ export class RealtimeChat {
         break;
 
       case 'proactive_suggestions':
+        if (__DEV__) {
+          console.log('[RealtimeChat] 📬 Received proactive_suggestions:', {
+            missedOpportunities: message.missedOpportunities?.length || 0,
+            checklistDetected: message.checklistDetected,
+            updatedChecklistItemIds: message.updatedChecklistItemIds?.length || 0,
+            hasCallback: !!this.options.onProactiveSuggestions,
+          });
+        }
+        
         if (this.options.onProactiveSuggestions && message.missedOpportunities) {
           const suggestionsMessage: ProactiveSuggestionsMessage = {
             type: 'proactive_suggestions',
@@ -310,6 +320,9 @@ export class RealtimeChat {
         if (__DEV__) {
           console.log('[Transcription] ✅ Session ended');
         }
+        // Server intentionally ended session - don't auto-reconnect
+        this.manuallyStopped = true;
+        this.shouldAutoReconnect = false;
         this.options.onSessionEnded?.(message.audioUrl);
         break;
 
@@ -414,6 +427,7 @@ export function convertCacheTurnsToDialogueTurns(cacheTurns: CacheTurn[]): Dialo
   return cacheTurns.map((turn) => ({
     id: turn.turn_id?.toString() || turn.provider_result_id,
     resultId: turn.provider_result_id,
+    turn_id: turn.turn_id || undefined, // Primary key for reconciliation
     speaker: turn.speaker === 'technician' ? 'Technician' : 'Customer',
     text: turn.text,
     timestamp: new Date(turn.updated_at_ms),

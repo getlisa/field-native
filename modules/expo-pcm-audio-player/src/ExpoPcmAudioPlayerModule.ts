@@ -53,4 +53,3 @@ declare class ExpoPcmAudioPlayerModule extends NativeModule<ExpoPcmAudioPlayerMo
 
 // This call loads the native module object from the JSI.
 export default requireNativeModule<ExpoPcmAudioPlayerModule>('ExpoPcmAudioPlayer');
-
