@@ -29,3 +29,8 @@ export type ExpoLiveAudioModuleEvents = {
   onStopped: () => void;
   onError: (params: { error: string }) => void;
 };
+
+export type ExpoLiveAudioViewProps = {
+  url?: string;
+  onLoad?: (event: { nativeEvent: { url: string } }) => void;
+};

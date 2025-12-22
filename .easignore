@@ -1,5 +1,71 @@
+# Dependencies
 node_modules/
 .git/
+
+# Build artifacts (exclude build outputs but keep source files)
+ios/build/
+ios/Pods/
+ios/DerivedData/
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+android/local.properties
+
+# Keep module Podspecs and source files (needed for expo-module-scripts)
+# Only exclude build artifacts from modules
+modules/*/ios/build/
+modules/*/ios/Pods/
+modules/*/android/build/
+modules/*/android/.gradle/
+modules/*/example/
+
+# Environment files
 .env.local
 .env.*.local
 
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test files
+**/__tests__/
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+
+# Documentation
+*.md
+!README.md
+
+# Example files
+app-example/
+
+# Large assets that aren't needed for build
+assets/images/react-logo*.png
+assets/images/partial-react-logo.png

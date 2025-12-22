@@ -1,6 +1,6 @@
 // Web stub for ExpoLiveAudioModule
 // Audio recording is not supported on web platform
-import { ExpoLiveAudioModuleEvents, AudioConfig, AudioSessionConfig } from './ExpoLiveAudio.types';
+import { AudioConfig, AudioSessionConfig } from './ExpoLiveAudio.types';
 
 const ExpoLiveAudioModule = {
   init(_config: AudioConfig) {

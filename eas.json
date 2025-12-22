@@ -12,13 +12,17 @@
       }
     },
     "preview": {
-      "distribution": "internal",
+      "distribution": "store",
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
       },
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://technician-copilot-services-staging.justclara.ai/api",
+        "EXPO_PUBLIC_COPILOT_BASE_URL": "https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging"
       }
     },
     "production": {
