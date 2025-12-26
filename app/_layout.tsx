@@ -1,5 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, useRouter, useSegments, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Linking from 'expo-linking';
 import 'react-native-reanimated';
@@ -11,6 +11,7 @@ import { QueryProvider } from '@/providers/QueryProvider';
 import { ThemedStatusBar } from '@/components/ThemedStatusBar';
 import { getNotificationService, initializeNotificationHandler } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
+import { useRecordingStore } from '@/store/useRecordingStore';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -20,6 +21,7 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const router = useRouter();
   const segments = useSegments();
+  const searchParams = useLocalSearchParams();
   const initialUrlProcessedRef = useRef(false);
   const initialNotificationProcessedRef = useRef(false);
 
@@ -183,22 +185,29 @@ export default function RootLayout() {
   }, [router, segments]);
 
   // Helper to navigate to job detail, avoiding re-navigation if already there
-  const navigateToJobDetail = useCallback((jobId: string) => {
+  const navigateToJobDetail = useCallback((jobId: string, tab?: string) => {
     const currentPath = segments.join('/');
     const targetPath = `jobs/${jobId}`;
     
     // Check if we're already on this exact job page
-    if (currentPath.includes(targetPath)) {
+    const isOnJobPage = currentPath.includes(targetPath);
+    
+    // If a tab is specified, always navigate to ensure tab change happens
+    // (searchParams might not be updated yet if we're navigating from a different route)
+    if (isOnJobPage && !tab) {
       if (__DEV__) {
-        console.log('[RootLayout] Already on job page, skipping navigation to prevent remounting');
+        console.log('[RootLayout] Already on job page without tab param, skipping navigation');
       }
       return;
     }
     
     if (__DEV__) {
-      console.log('[RootLayout] Navigating to job:', jobId, 'Current path:', currentPath);
+      console.log('[RootLayout] Navigating to job:', jobId, 'Tab:', tab, 'Current path:', currentPath);
     }
-    router.replace(`/jobs/${jobId}`);
+    
+    // Include tab parameter in URL if provided
+    const url = tab ? `/jobs/${jobId}?tab=${tab}` : `/jobs/${jobId}`;
+    router.replace(url as any);
   }, [router, segments]);
 
   // Handle notification responses (when user taps on notification)
@@ -234,7 +243,24 @@ export default function RootLayout() {
               const jobId = data?.jobId;
               if (jobId && typeof jobId === 'string') {
                 if (data?.type === 'recording' || data?.type === 'proactive_suggestion') {
-                  navigateToJobDetail(jobId);
+                  // For proactive suggestions, navigate to AskAI tab
+                  const tab = data?.type === 'proactive_suggestion' && typeof data?.tab === 'string' ? data.tab : undefined;
+                  
+                  // If it's a proactive_suggestion notification, set flag to suppress recording confirmation
+                  // Then set it back to true after a timeout to allow normal behavior
+                  if (data?.type === 'proactive_suggestion') {
+                    useRecordingStore.getState().setShouldShowRecordingConfirmation(false);
+                    
+                    // Set flag back to true after navigation completes (2 seconds should be enough)
+                    setTimeout(() => {
+                      useRecordingStore.getState().setShouldShowRecordingConfirmation(true);
+                      if (__DEV__) {
+                        console.log('[RootLayout] Recording confirmation flag reset to true after proactive_suggestion navigation');
+                      }
+                    }, 200);
+                  }
+                  
+                  navigateToJobDetail(jobId, tab);
                 } else {
                   // Fallback: if jobId exists, navigate to job detail
                   navigateToJobDetail(jobId);
@@ -258,7 +284,24 @@ export default function RootLayout() {
           const jobId = data?.jobId;
           if (jobId && typeof jobId === 'string') {
             if (data?.type === 'recording' || data?.type === 'proactive_suggestion') {
-              navigateToJobDetail(jobId);
+              // For proactive suggestions, navigate to AskAI tab
+              const tab = data?.type === 'proactive_suggestion' && typeof data?.tab === 'string' ? data.tab : undefined;
+              
+              // If it's a proactive_suggestion notification, set flag to suppress recording confirmation
+              // Then set it back to true after a timeout to allow normal behavior
+              if (data?.type === 'proactive_suggestion') {
+                useRecordingStore.getState().setShouldShowRecordingConfirmation(false);
+                
+                // Set flag back to true after navigation completes (2 seconds should be enough)
+                setTimeout(() => {
+                  useRecordingStore.getState().setShouldShowRecordingConfirmation(true);
+                  if (__DEV__) {
+                    console.log('[RootLayout] Recording confirmation flag reset to true after proactive_suggestion navigation');
+                  }
+                }, 2000);
+              }
+              
+              navigateToJobDetail(jobId, tab);
             } else {
               // Fallback: if jobId exists, navigate to job detail
               navigateToJobDetail(jobId);

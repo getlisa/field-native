@@ -37,6 +37,30 @@ abstract class BaseAudioProcessor implements IAudioProcessor {
   }
 
   /**
+   * Convert base64 string to ArrayBuffer
+   */
+  protected base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const buffer = Buffer.from(base64, 'base64');
+    // Create a new ArrayBuffer from the buffer data
+    const arrayBuffer = new ArrayBuffer(buffer.length);
+    const view = new Uint8Array(arrayBuffer);
+    view.set(buffer);
+    return arrayBuffer;
+  }
+
+  /**
+   * Convert bytes to ArrayBuffer
+   */
+  protected bytesToArrayBuffer(bytes: Uint8Array | number[]): ArrayBuffer {
+    const uint8Array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    // Create a new ArrayBuffer from the Uint8Array data
+    const arrayBuffer = new ArrayBuffer(uint8Array.length);
+    const view = new Uint8Array(arrayBuffer);
+    view.set(uint8Array);
+    return arrayBuffer;
+  }
+
+  /**
    * Compute RMS (root mean square) from PCM16 base64 data
    */
   protected computeRms(base64Data: string): number {
@@ -80,8 +104,10 @@ class AndroidAudioProcessor extends BaseAudioProcessor {
         return null;
       }
       const byteSize = this.getByteSize(rawData);
+      const buffer = this.base64ToArrayBuffer(rawData);
       return {
         base64: rawData,
+        buffer,
         byteSize,
         rms: this.computeRms(rawData),
       };
@@ -95,8 +121,10 @@ class AndroidAudioProcessor extends BaseAudioProcessor {
         return null;
       }
       const base64 = this.bytesToBase64(bytes);
+      const buffer = this.bytesToArrayBuffer(bytes);
       return {
         base64,
+        buffer,
         byteSize: bytes.length,
         rms: this.computeRms(base64),
       };
@@ -129,8 +157,10 @@ class iOSAudioProcessor extends BaseAudioProcessor {
         return null;
       }
       const byteSize = this.getByteSize(rawData);
+      const buffer = this.base64ToArrayBuffer(rawData);
       return {
         base64: rawData,
+        buffer,
         byteSize,
         rms: this.computeRms(rawData),
       };
@@ -144,8 +174,11 @@ class iOSAudioProcessor extends BaseAudioProcessor {
         return null;
       }
       const base64 = this.bytesToBase64(bytes);
+      // Copy ArrayBuffer to ensure we have our own copy (ArrayBuffers can be views)
+      const buffer = this.bytesToArrayBuffer(bytes);
       return {
         base64,
+        buffer,
         byteSize: bytes.length,
         rms: this.computeRms(base64),
       };
@@ -158,8 +191,10 @@ class iOSAudioProcessor extends BaseAudioProcessor {
         return null;
       }
       const base64 = this.bytesToBase64(rawData);
+      const buffer = this.bytesToArrayBuffer(rawData);
       return {
         base64,
+        buffer,
         byteSize: rawData.length,
         rms: this.computeRms(base64),
       };
@@ -173,8 +208,10 @@ class iOSAudioProcessor extends BaseAudioProcessor {
       }
       const bytes = new Uint8Array(rawData);
       const base64 = this.bytesToBase64(bytes);
+      const buffer = this.bytesToArrayBuffer(bytes);
       return {
         base64,
+        buffer,
         byteSize: bytes.length,
         rms: this.computeRms(base64),
       };
@@ -199,8 +236,10 @@ class iOSAudioProcessor extends BaseAudioProcessor {
         }
         if (bytes.length > 0) {
           const base64 = this.bytesToBase64(bytes);
+          const buffer = this.bytesToArrayBuffer(bytes);
           return {
             base64,
+            buffer,
             byteSize: bytes.length,
             rms: this.computeRms(base64),
           };
@@ -257,12 +296,13 @@ export function getNativeAudioConfig(processor: IAudioProcessor): Record<string,
   }
 
   // iOS-specific optimizations for better microphone gain
+  // Note: Audio session mode is configured separately via configureAudioSession() in AudioRecorder.ts
+  // This config is passed to init() but the actual audio session uses VoiceChat mode
   return {
     ...baseConfig,
     // iOS uses AVAudioSession under the hood
     // These options help improve microphone sensitivity
     audioQuality: 'High',
-    audioMode: 'measurement', // Optimized for capturing all audio without processing
     enableBuiltInEQ: false, // Disable EQ that might reduce gain
   };
 }

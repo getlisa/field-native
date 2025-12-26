@@ -30,7 +30,7 @@ export interface TranscriptionViewProps {
   jobStatus?: 'scheduled' | 'ongoing' | 'completed';
   isViewer?: boolean;
   isAssigned?: boolean;
-  scrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void } | null>; // For auto-scroll
+  scrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>; // For auto-scroll
   isLoadingDbTurns?: boolean; // Loading state for DB turns
 }
 
@@ -216,15 +216,29 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   const { colors } = useTheme();
   const flatListRef = useRef<FlatList>(null);
   
-  // Expose scrollToEnd method via ref for auto-scroll
+  // Use turns directly from props (already reconciled by parent)
+  const enhancedTurns: EnhancedTurn[] = initialTurns;
+  
+  // Expose scrollToEnd and scrollToTurnId methods via ref for auto-scroll
   React.useImperativeHandle(scrollRef, () => ({
     scrollToEnd: (options?: { animated?: boolean }) => {
       flatListRef.current?.scrollToEnd(options);
     },
-  }), []);
-
-  // Use turns directly from props (already reconciled by parent)
-  const enhancedTurns: EnhancedTurn[] = initialTurns;
+    scrollToTurnId: (turnId: string | number) => {
+      // Find the index of the turn with matching turn_id
+      const turnIndex = enhancedTurns.findIndex(turn => {
+        const turnIdNum = typeof turnId === 'string' ? parseInt(turnId, 10) : turnId;
+        return turn.turn_id === turnIdNum || turn.id === turnId || String(turn.id) === String(turnId);
+      });
+      if (turnIndex !== -1 && flatListRef.current) {
+        flatListRef.current.scrollToIndex({
+          index: turnIndex,
+          animated: true,
+          viewPosition: 0.5,
+        });
+      }
+    },
+  }), [enhancedTurns]);
   
   // State for completed job audio features (ONLY fetch audio, not turns)
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -728,7 +742,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
       <FlatList
         ref={flatListRef}
         data={enhancedTurns}
-        keyExtractor={(item, index) => item.id || `turn-${index}`}
+        keyExtractor={(item, index) => `turn-${index}`}
         renderItem={renderItem}
         contentContainerStyle={[
           styles.listContent,

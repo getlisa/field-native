@@ -31,11 +31,11 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { JobDetailProvider } from '@/contexts/JobDetailContext';
 import { useJobDetails } from '@/hooks/useJobDetails';
 import { useJobQuery } from '@/hooks/useJobQuery';
-import { useTranscription } from '@/hooks/useTranscription';
 import { useSubscriberTranscription } from '@/hooks/useSubscriberTranscription';
 import { useTurnManagement } from '@/hooks/useTurnManagement';
 import { useSwipeNavigation } from '@/hooks/useSwipeNavigation';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useRecordingStore } from '@/store/useRecordingStore';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
 import {
@@ -43,6 +43,7 @@ import {
   formatProactiveSuggestionsForNotification,
 } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
+import { jobService } from '@/services/jobService';
 import type { ProactiveSuggestionsMessage } from '@/lib/RealtimeChat';
 
 type TabKey = 'transcription' | 'askAI' | 'checklist' | 'insights';
@@ -53,21 +54,39 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { key: 'transcription', icon: 'mic-outline' },
-  { key: 'askAI', icon: 'chatbubble-ellipses-outline' },
+  { key: 'transcription', icon: 'document-text-outline' },
+  { key: 'askAI', icon: 'sparkles-outline' },
   { key: 'checklist', icon: 'checkmark-circle-outline' },
   { key: 'insights', icon: 'bulb-outline' },
 ];
 
 export default function JobDetailPage() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const router = useRouter();
   const currentUser = useAuthStore((state) => state.user);
   const { colors, shadows } = useTheme();
 
-  const [activeTab, setActiveTab] = useState<TabKey>('transcription');
+  // Initialize activeTab from URL parameter if provided, otherwise default to 'transcription'
+  const [activeTab, setActiveTab] = useState<TabKey>(() => {
+    if (tab && ['transcription', 'askAI', 'checklist', 'insights'].includes(tab)) {
+      return tab as TabKey;
+    }
+    return 'transcription';
+  });
+  
+  // Update activeTab when tab param changes (for navigation from notifications)
+  useEffect(() => {
+    if (tab && ['transcription', 'askAI', 'checklist', 'insights'].includes(tab)) {
+      if (__DEV__) {
+        console.log('[JobDetail] Tab param changed to:', tab);
+      }
+      setActiveTab(tab as TabKey);
+    }
+  }, [tab]);
+  
   const [actionLoading, setActionLoading] = useState(false);
   const [suppressAutoTranscription, setSuppressAutoTranscription] = useState(false);
+  const [isCompletingJob, setIsCompletingJob] = useState(false); // Track when job is being completed
   
   // Track if we're allowing navigation (e.g., from notification click)
   const allowNavigationRef = useRef(false);
@@ -115,17 +134,30 @@ export default function JobDetailPage() {
     };
   }, []);
 
-  const {
-    turns: wsTurns,
-    isConnected,
-    isConnecting,
-    isRecording,
-    error: transcriptionError,
-    startTranscription,
-    stopTranscription,
-  } = useTranscription({
-    jobId: id, // Pass job ID for deep linking from background service notification
-    onProactiveSuggestions: (suggestions: ProactiveSuggestionsMessage) => {
+  // Get transcription state and methods from store
+  // Use stable empty array reference to avoid infinite loops
+  const emptyTurnsRef = useRef<DialogueTurn[]>([]);
+  const wsTurns = useRecordingStore((state) => {
+    // Get turns for current session (reactive)
+    if (state.activeTranscriptionSessionId) {
+      const sessionTurns = state.turnsBySessionId[state.activeTranscriptionSessionId];
+      // Return the actual array from store (or stable empty array reference)
+      return sessionTurns || emptyTurnsRef.current;
+    }
+    return emptyTurnsRef.current;
+  });
+  const isRecording = useRecordingStore((state) => state.isRecording);
+  const isConnected = useRecordingStore((state) => state.isConnected);
+  const isConnecting = useRecordingStore((state) => state.isConnecting);
+  const transcriptionError = useRecordingStore((state) => state.error);
+  const activeTranscriptionSessionId = useRecordingStore((state) => state.activeTranscriptionSessionId);
+  const activeJobId = useRecordingStore((state) => state.activeJobId);
+  const startTranscription = useRecordingStore((state) => state.startTranscription);
+  const stopTranscription = useRecordingStore((state) => state.stopTranscription);
+  const setApiTurns = useRecordingStore((state) => state.setApiTurns);
+
+  // Handle proactive suggestions callback
+  const handleProactiveSuggestions = useCallback((suggestions: ProactiveSuggestionsMessage) => {
       if (__DEV__) {
         console.log('[JobDetail] 📬 Proactive suggestions received:', {
           missedOpportunities: suggestions.missedOpportunities?.length || 0,
@@ -186,8 +218,7 @@ export default function JobDetailPage() {
           hasMissedOpportunities: (suggestions.missedOpportunities?.length || 0) > 0,
         });
       }
-    },
-  });
+  }, [job, isAssignedToJob, id, invalidateJob]);
 
   // Manage recording notification when recording state changes
   useEffect(() => {
@@ -234,6 +265,14 @@ export default function JobDetailPage() {
   const firstTranscriptionSession = job?.visit_sessions?.transcription_sessions?.[0];
   const lastHeartbeatAt = firstTranscriptionSession?.last_heartbeat_at || null;
 
+  // Callback for when subscriber detects job might be completed (no data received)
+  const handleSubscriberJobCompleted = useCallback(() => {
+    if (__DEV__) {
+      console.log('[JobDetail] Subscriber detected job might be completed - invalidating job query');
+    }
+    invalidateJob();
+  }, [invalidateJob]);
+
   // Subscriber transcription for non-assigned viewers
   const {
     turns: subscriberWsTurns,
@@ -250,20 +289,195 @@ export default function JobDetailPage() {
     isJobOngoing: job?.status === 'ongoing',
     enabled: !isAssignedToJob && job?.status === 'ongoing', // Only for viewers of ongoing jobs
     lastHeartbeatAt,
+    onJobCompleted: handleSubscriberJobCompleted, // Invalidate job when no data received
   });
 
-  // Reconcile DB turns with WebSocket turns
+  // Poll job status for subscribers during ongoing jobs
+  // This detects when job completes and triggers audio/turn updates
+  useEffect(() => {
+    // Only poll for viewers of ongoing jobs
+    if (isAssignedToJob || !job || job.status !== 'ongoing' || !id) {
+      return;
+    }
+
+    if (__DEV__) {
+      console.log('[JobDetail] Starting job status polling for subscriber (ongoing job)');
+    }
+
+    // Poll every 5 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        await fetchJob(id);
+        
+        // Check if job completed (will trigger via job state change)
+        if (__DEV__ && job?.status === 'completed') {
+          console.log('[JobDetail] Subscriber poll detected job completion');
+        }
+      } catch (error) {
+        console.error('[JobDetail] Error polling job status:', error);
+      }
+    }, 5000);
+
+    return () => {
+      if (__DEV__) {
+        console.log('[JobDetail] Stopping job status polling for subscriber');
+      }
+      clearInterval(pollInterval);
+    };
+  }, [isAssignedToJob, job?.status, id, fetchJob]);
+
+  // When job becomes completed for subscribers, fetch final turns
+  const hasFetchedSubscriberTurnsRef = useRef(false);
+  const subscriberJobIdRef = useRef<string | null>(null);
+  
+  useEffect(() => {
+    const fetchSubscriberTurns = async () => {
+      // Only for viewers (subscribers)
+      if (isAssignedToJob || !visitSession?.id || !job?.status) {
+        return;
+      }
+      
+      // Reset flag if job ID changed
+      if (subscriberJobIdRef.current !== id) {
+        hasFetchedSubscriberTurnsRef.current = false;
+        subscriberJobIdRef.current = id;
+      }
+      
+      // Only fetch when job becomes completed
+      if (job.status !== 'completed') {
+        hasFetchedSubscriberTurnsRef.current = false;
+        return;
+      }
+      
+      // Only fetch once per job completion
+      if (hasFetchedSubscriberTurnsRef.current) {
+        return;
+      }
+      
+      try {
+        if (__DEV__) {
+          console.log('[JobDetail] Subscriber: Job completed - fetching final turns from DB...');
+        }
+        
+        hasFetchedSubscriberTurnsRef.current = true;
+        
+        const freshTurns = await jobService.getTurnsByVisitSessionId(visitSession.id);
+        const convertedTurns: DialogueTurn[] = freshTurns.map((turn) => ({
+          id: turn.id?.toString() || turn.provider_result_id,
+          resultId: turn.provider_result_id,
+          turn_id: typeof turn.id === 'number' ? turn.id : parseInt(turn.id?.toString() || '0'),
+          speaker: (turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician')) as 'Technician' | 'Customer',
+          text: turn.text,
+          timestamp: new Date(turn.created_at),
+          isPartial: false,
+          turn_index: turn.turn_index,
+          word_timestamps: turn.meta_data?.word_timestamps || [],
+        }));
+        
+        // Update subscriber turns with fresh API data
+        setViewerApiTurns(convertedTurns);
+        
+        if (__DEV__) {
+          console.log('[JobDetail] ✅ Subscriber: Updated with final turns from DB:', convertedTurns.length);
+        }
+      } catch (error) {
+        console.error('[JobDetail] ❌ Subscriber: Error fetching final turns:', error);
+        hasFetchedSubscriberTurnsRef.current = false; // Reset on error
+      }
+    };
+    
+    fetchSubscriberTurns();
+  }, [job?.status, visitSession?.id, isAssignedToJob, setViewerApiTurns, id]);
+
+  // When job becomes completed, fetch fresh turns from API and update store
+  // This ensures we show the final DB state instead of cached turns
+  const hasFetchedFreshTurnsRef = useRef(false);
+  const jobIdForFreshTurnsRef = useRef<string | null>(null);
+  
+  useEffect(() => {
+    const fetchAndSetFreshTurns = async () => {
+      // Only for assigned users (they have the recording store)
+      if (!isAssignedToJob || !visitSession?.id || !job?.status) {
+        return;
+      }
+      
+      // Reset flag if job ID changed (navigating to different job)
+      if (jobIdForFreshTurnsRef.current !== id) {
+        hasFetchedFreshTurnsRef.current = false;
+        jobIdForFreshTurnsRef.current = id;
+      }
+      
+      // Only fetch when job becomes completed
+      if (job.status !== 'completed') {
+        hasFetchedFreshTurnsRef.current = false;
+        return;
+      }
+      
+      // Only fetch if we're not currently recording (job is done)
+      if (isRecording || isConnected) {
+        return;
+      }
+      
+      // Only fetch once per job completion
+      if (hasFetchedFreshTurnsRef.current) {
+        return;
+      }
+      
+      try {
+        if (__DEV__) {
+          console.log('[JobDetail] Job completed - fetching fresh turns from API to replace cached turns...');
+        }
+        
+        hasFetchedFreshTurnsRef.current = true;
+        
+        const freshTurns = await jobService.getTurnsByVisitSessionId(visitSession.id);
+        const convertedTurns: DialogueTurn[] = freshTurns.map((turn) => ({
+          id: turn.id?.toString() || turn.provider_result_id,
+          resultId: turn.provider_result_id,
+          turn_id: typeof turn.id === 'number' ? turn.id : parseInt(turn.id?.toString() || '0'),
+          speaker: (turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician')) as 'Technician' | 'Customer',
+          text: turn.text,
+          timestamp: new Date(turn.created_at),
+          isPartial: false,
+          turn_index: turn.turn_index,
+          word_timestamps: turn.meta_data?.word_timestamps || [],
+        }));
+        
+        // Update store with fresh API turns (this replaces cached turns)
+        setApiTurns(convertedTurns);
+        
+        if (__DEV__) {
+          console.log('[JobDetail] ✅ Updated store with fresh API turns after job completion:', convertedTurns.length);
+        }
+      } catch (error) {
+        console.error('[JobDetail] ❌ Error fetching fresh turns after job completion:', error);
+        hasFetchedFreshTurnsRef.current = false; // Reset on error so we can retry
+      }
+    };
+    
+    fetchAndSetFreshTurns();
+  }, [job?.status, visitSession?.id, isAssignedToJob, isRecording, isConnected, setApiTurns, id]);
+
+  // Use WebSocket turns directly (don't reconcile during live transcription)
+  // cached_turns from WebSocket already contain ALL turns for the session
+  // Reconciliation is not needed and causes issues with turn ordering
   const effectiveTurns = useMemo(() => {
     const wsSource = isAssignedToJob ? wsTurns : subscriberWsTurns;
     
-    // If we have WebSocket data, reconcile with DB
+    // During live transcription (ongoing job), use WebSocket data directly
+    // cached_turns already contain all turns in correct order
+    if (job?.status === 'ongoing' && wsSource.length > 0) {
+      return wsSource;
+    }
+    
+    // For completed jobs, prefer WebSocket data if available (fresher), otherwise use DB
     if (wsSource.length > 0) {
-      return reconcileTurns(wsSource);
+      return wsSource;
     }
     
     // Fallback to DB turns if no WebSocket data
     return dbTurns;
-  }, [isAssignedToJob, wsTurns, subscriberWsTurns, dbTurns, reconcileTurns]);
+  }, [isAssignedToJob, wsTurns, subscriberWsTurns, dbTurns, job?.status]);
   
   // For viewers: show "live" when receiving cached_turns from WebSocket
   // For assigned users: show "live" when connected
@@ -277,7 +491,7 @@ export default function JobDetailPage() {
   const previousJobIdRef = useRef<string | undefined>(undefined);
   
   // Ref for TranscriptionTab to enable auto-scroll
-  const transcriptionScrollRef = useRef<{ scrollToEnd: (options?: { animated?: boolean }) => void } | null>(null);
+  const transcriptionScrollRef = useRef<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -289,6 +503,16 @@ export default function JobDetailPage() {
       fetchJob(id);
     }
   }, [id, fetchJob]);
+
+  // Update active tab when tab parameter changes (e.g., from notification)
+  useEffect(() => {
+    if (tab && ['transcription', 'askAI', 'checklist', 'insights'].includes(tab)) {
+      setActiveTab(tab as TabKey);
+      if (__DEV__) {
+        console.log('[JobDetail] Tab changed from URL parameter:', tab);
+      }
+    }
+  }, [tab]);
   
   // Auto-scroll to latest turn for ongoing jobs
   // Uses the last turn's ID and text to detect any changes (not just length)
@@ -319,8 +543,10 @@ export default function JobDetailPage() {
   // (Removed useEffect that auto-started transcription)
 
   // Stop transcription only when navigating to a different job (not when remounting with same ID)
+  // Use store state to check if same session is active
   useEffect(() => {
     const currentJobId = id;
+    const currentSessionId = visitSession?.id;
     
     // If we had a previous job ID and it's different from current, stop transcription
     // (We're navigating away to a different job)
@@ -329,6 +555,25 @@ export default function JobDetailPage() {
         console.log('[JobDetail] Navigating to different job, stopping transcription');
       }
       stopTranscription();
+    }
+    
+    // Check if we're remounting with the same active session (from store)
+    // If so, don't stop transcription - it's already running
+    if (
+      currentJobId &&
+      currentSessionId &&
+      activeJobId === currentJobId &&
+      activeTranscriptionSessionId === currentSessionId &&
+      isRecording
+    ) {
+      if (__DEV__) {
+        console.log('[JobDetail] Component remounting with same active session, preserving transcription:', {
+          jobId: currentJobId,
+          sessionId: currentSessionId,
+          isRecording: isRecording,
+        });
+      }
+      // Don't stop - transcription is already active for this session
     }
     
     // Update the previous job ID
@@ -349,7 +594,7 @@ export default function JobDetailPage() {
         }
       }
     };
-  }, [id, stopTranscription]);
+  }, [id, visitSession?.id, activeJobId, activeTranscriptionSessionId, isRecording, stopTranscription]);
 
   const handleStartJob = useCallback(async () => {
     if (!id || !isAssignedToJob) return;
@@ -406,7 +651,10 @@ export default function JobDetailPage() {
       if (session?.id && job?.company_id) {
         // Start transcription immediately after starting job
         setActiveTab('transcription');
-        await startTranscription(session.id, job.company_id);
+        await startTranscription(session.id, job.company_id, {
+          jobId: id,
+          onProactiveSuggestions: handleProactiveSuggestions,
+        });
       }
     } finally {
       setActionLoading(false);
@@ -415,6 +663,13 @@ export default function JobDetailPage() {
 
   // Track if confirmCompleteJob was called from a user action (confirmation dialog)
   const completeJobUserActionRef = useRef(false);
+  // Ref to track latest job status for polling
+  const jobStatusRef = useRef(job?.status);
+
+  // Update job status ref when job changes
+  useEffect(() => {
+    jobStatusRef.current = job?.status;
+  }, [job?.status]);
 
   const confirmCompleteJob = useCallback(async () => {
     // Only allow completion if it was triggered by user action (confirmation dialog)
@@ -432,19 +687,101 @@ export default function JobDetailPage() {
     if (!id) return;
 
     if (__DEV__) {
-      console.log('[JobDetail] ✅ confirmCompleteJob called from user action (confirmation dialog)');
+      console.log('[JobDetail] ✅ Stopping recording - sending WebSocket end event (server will complete job)');
     }
 
     setSuppressAutoTranscription(true);
     setActionLoading(true);
+    setIsCompletingJob(true); // Mark as processing
+    
     try {
-      stopTranscription();
-      await completeJob(id);
+      // Stop transcription and send WebSocket 'end' event
+      // The server will handle completing the job when it receives the 'end' event
+      await stopTranscription();
+      
+      // Immediately fetch fresh turns from DB and update store
+      // This provides instant feedback without waiting for job status to update
+      if (visitSession?.id) {
+        try {
+          if (__DEV__) {
+            console.log('[JobDetail] 📥 Fetching fresh turns from DB after stop...');
+          }
+          
+          const freshTurns = await jobService.getTurnsByVisitSessionId(visitSession.id);
+          const convertedTurns: DialogueTurn[] = freshTurns.map((turn) => ({
+            id: turn.id?.toString() || turn.provider_result_id,
+            resultId: turn.provider_result_id,
+            turn_id: typeof turn.id === 'number' ? turn.id : parseInt(turn.id?.toString() || '0'),
+            speaker: (turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician')) as 'Technician' | 'Customer',
+            text: turn.text,
+            timestamp: new Date(turn.created_at),
+            isPartial: false,
+            turn_index: turn.turn_index,
+            word_timestamps: turn.meta_data?.word_timestamps || [],
+          }));
+          
+          // Update store with fresh API turns immediately
+          setApiTurns(convertedTurns);
+          
+          if (__DEV__) {
+            console.log('[JobDetail] ✅ Updated store with fresh turns immediately:', convertedTurns.length);
+          }
+        } catch (turnError) {
+          console.error('[JobDetail] ❌ Error fetching fresh turns:', turnError);
+          // Continue anyway - job completion is more important
+        }
+      }
+      
+      // Poll for job completion (server processes the end event and completes the job)
+      // This is needed to show audio player and final job state
+      if (__DEV__) {
+        console.log('[JobDetail] ⏳ Polling for job completion to show audio player...');
+      }
+      
+      const maxAttempts = 15; // Poll for up to 15 seconds (15 * 1 second)
+      let attempts = 0;
+      let jobCompleted = false;
+      
+      while (attempts < maxAttempts && !jobCompleted) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await fetchJob(id);
+        
+        // Wait a bit for state to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        attempts++;
+        
+        // Check job status from ref (updated by useEffect)
+        if (jobStatusRef.current === 'completed') {
+          jobCompleted = true;
+          if (__DEV__) {
+            console.log('[JobDetail] ✅ Job marked as completed by server - audio player will load');
+          }
+          break;
+        }
+        
+        if (__DEV__ && attempts % 3 === 0) {
+          console.log(`[JobDetail] ⏳ Waiting for job completion... (${attempts}/${maxAttempts})`);
+        }
+      }
+      
+      if (!jobCompleted) {
+        if (__DEV__) {
+          console.warn('[JobDetail] ⚠️ Job completion timeout - refreshing anyway');
+        }
+      }
+      
+      // Invalidate job query to refresh all data (audio recordings, status, etc.)
+      invalidateJob();
+      
+      // Final fetch to ensure we have the latest job data
       await fetchJob(id);
+      
     } finally {
       setActionLoading(false);
+      setIsCompletingJob(false);
     }
-  }, [id, completeJob, stopTranscription, fetchJob]);
+  }, [id, stopTranscription, fetchJob, invalidateJob]);
 
   const handleResumeJob = useCallback(async () => {
     if (!id || !isAssignedToJob || !visitSession?.id || !job?.company_id) {
@@ -479,7 +816,10 @@ export default function JobDetailPage() {
 
       // Start transcription (this will create a new transcription session)
       setActiveTab('transcription');
-      await startTranscription(visitSession.id, job.company_id);
+      await startTranscription(visitSession.id, job.company_id, {
+        jobId: id,
+        onProactiveSuggestions: handleProactiveSuggestions,
+      });
     } finally {
       setActionLoading(false);
     }
@@ -509,8 +849,26 @@ export default function JobDetailPage() {
   }, [confirmCompleteJob]);
 
   const handleBack = useCallback(() => {
-    // Confirm back navigation if recording is ongoing
-    if (isRecording && isAssignedToJob) {
+    // Check if we need to show confirmation dialog for recording
+    // This handles both iOS back button and Android hardware back button
+    const shouldShowConfirmation = useRecordingStore.getState().shouldShowRecordingConfirmation;
+    
+    if (__DEV__) {
+      console.log('[JobDetail] 🔙 Back button pressed - checking conditions:', {
+        isRecording,
+        isAssignedToJob,
+        allowNavigation: allowNavigationRef.current,
+        shouldShowConfirmation,
+        willShowDialog: isRecording && isAssignedToJob && !allowNavigationRef.current && shouldShowConfirmation,
+      });
+    }
+    
+    if (isRecording && isAssignedToJob && !allowNavigationRef.current && shouldShowConfirmation) {
+      // Show confirmation dialog
+      if (__DEV__) {
+        console.log('[JobDetail] ✋ Back button pressed during recording - showing confirmation');
+      }
+      
       Alert.alert(
         'Recording in Progress',
         'You have an active recording. Do you want to complete the job before leaving?',
@@ -518,23 +876,37 @@ export default function JobDetailPage() {
           {
             text: 'Keep Recording',
             style: 'cancel',
+            onPress: () => {
+              if (__DEV__) {
+                console.log('[JobDetail] User chose to keep recording');
+              }
+            },
           },
           {
             text: 'Complete Job',
             style: 'destructive',
             onPress: () => {
+              if (__DEV__) {
+                console.log('[JobDetail] User chose to complete job before leaving (from back button)');
+              }
               // Set flag to indicate this is a user action from confirmation dialog
               completeJobUserActionRef.current = true;
+              // Allow navigation after completion
+              allowNavigationRef.current = true;
               confirmCompleteJob();
             },
           },
         ],
         { cancelable: true }
       );
-      return true; // Prevent default back action
+      return true; // Prevent navigation
     }
     
-    // Try to go back, but handle the case where there's no previous screen
+    // Not recording or allowed to navigate - proceed with normal navigation
+    if (__DEV__) {
+      console.log('[JobDetail] ➡️ Proceeding with navigation');
+    }
+    
     try {
       if (router.canGoBack()) {
         router.back();
@@ -547,52 +919,92 @@ export default function JobDetailPage() {
       router.replace('/(tabs)/jobs');
     }
     return true; // Prevent default back action since we handled it
-  }, [isRecording, isAssignedToJob, confirmCompleteJob, router]);
+  }, [router, isRecording, isAssignedToJob, confirmCompleteJob]);
 
   // Prevent navigation when recording (using usePreventRemove for proper native-stack support)
-  // But allow navigation if it's from a notification or user confirmed completion
-  usePreventRemove(isRecording && isAssignedToJob && !allowNavigationRef.current, ({ data }) => {
-    if (__DEV__) {
-      console.log('[JobDetail] 🚫 Navigation prevented - recording in progress', {
-        isRecording,
-        isAssignedToJob,
-        allowNavigation: allowNavigationRef.current,
-      });
-    }
+  // But allow navigation if it's from a notification (flag is false) or user confirmed completion
+  // 
+  // MUST use the selector hook (not getState()) to ensure component re-renders when flag changes
+  // This is critical: when flag changes from false → true, the condition must update
+  const shouldShowConfirmation = useRecordingStore((state) => state.shouldShowRecordingConfirmation);
+  const shouldPreventRemove = 
+    isRecording && 
+    isAssignedToJob && 
+    !allowNavigationRef.current && 
+    shouldShowConfirmation;
+  
+  // Memoized callback for usePreventRemove - recreated when dependencies change
+  // This ensures the callback always has the latest values for tab, isRecording, and isAssignedToJob
+  const handlePreventRemove = useCallback(
+    ({ data }: { data: { action: any } }) => {
+      // Double-check flag at navigation time using getState() - this is the latest value
+      // If flag changed to false between render and navigation, we still can't undo
+      // e.preventDefault(), but we won't show the alert
+      const shouldShowConfirmation = useRecordingStore.getState().shouldShowRecordingConfirmation;
+      console.log('shouldShowConfirmation', shouldShowConfirmation);
+      if (!shouldShowConfirmation) {
+        if (__DEV__) {
+          console.log('[JobDetail] ✅ Flag is false - not showing confirmation (notification navigation)', {
+            tab,
+            isRecording,
+            isAssignedToJob,
+          });
+        }
+        // Note: e.preventDefault() was already called, but we don't show the alert
+        return;
+      }
 
-    Alert.alert(
-      'Recording in Progress',
-      'You have an active recording. Do you want to complete the job before leaving?',
-      [
-        {
-          text: 'Keep Recording',
-          style: 'cancel',
-          onPress: () => {
-            if (__DEV__) {
-              console.log('[JobDetail] User chose to keep recording');
-            }
-          },
-        },
-        {
-          text: 'Complete Job',
-          style: 'destructive',
-          onPress: () => {
-            if (__DEV__) {
-              console.log('[JobDetail] User chose to complete job before leaving');
-            }
-            // Set flag to indicate this is a user action from confirmation dialog
-            completeJobUserActionRef.current = true;
-            // Allow navigation after completion
-            allowNavigationRef.current = true;
-            confirmCompleteJob();
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  });
+      // Show confirmation dialog only if flag is true
+      if (__DEV__) {
+        console.log('[JobDetail] 🚫 Navigation prevented - recording in progress', {
+          isRecording,
+          isAssignedToJob,
+          allowNavigation: allowNavigationRef.current,
+          shouldShowConfirmation,
+          tab,
+        });
+      }
 
-  // Handle Android back button (as additional fallback)
+      Alert.alert(
+        'Recording in Progress',
+        'You have an active recording. Do you want to complete the job before leaving?',
+        [
+          {
+            text: 'Keep Recording',
+            style: 'cancel',
+            onPress: () => {
+              if (__DEV__) {
+                console.log('[JobDetail] User chose to keep recording');
+              }
+            },
+          },
+          {
+            text: 'Complete Job',
+            style: 'destructive',
+            onPress: () => {
+              if (__DEV__) {
+                console.log('[JobDetail] User chose to complete job before leaving');
+              }
+              // Set flag to indicate this is a user action from confirmation dialog
+              completeJobUserActionRef.current = true;
+              // Allow navigation after completion
+              allowNavigationRef.current = true;
+              confirmCompleteJob();
+            },
+          },
+        ],
+        { cancelable: true }
+      );
+    },
+    [tab, isRecording, isAssignedToJob, confirmCompleteJob]
+  );
+  
+  usePreventRemove(shouldPreventRemove, handlePreventRemove);
+
+  // Handle Android back button
+  // This ensures confirmation dialog shows for Android hardware back button
+  // iOS back button is handled by header back button (which calls handleBack)
+  // iOS swipe gestures are handled by usePreventRemove
   useEffect(() => {
     if (Platform.OS === 'android') {
       const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -623,6 +1035,7 @@ export default function JobDetailPage() {
       visitSessionId: visitSession?.id || job?.visit_sessions?.id,
       transcriptionScrollRef, // Add scroll ref for auto-scroll
       isLoadingDbTurns, // Add loading state for DB turns
+      setActiveTab, // Add setActiveTab for navigation
     }),
     [
       job,
@@ -637,6 +1050,7 @@ export default function JobDetailPage() {
       stopTranscription,
       visitSession?.id,
       isLoadingDbTurns,
+      setActiveTab,
     ]
   );
 
@@ -802,23 +1216,16 @@ export default function JobDetailPage() {
                               <Ionicons name="play" size={20} color={colors.textInverse} />
                             )}
                           </Pressable> */}
-                          <Pressable
+                          <Button
                             onPress={handleCompleteJob}
-                            disabled={actionLoading}
-                            style={({ pressed }) => [
-                              styles.iconButton,
-                              {
-                                backgroundColor: colors.buttonPrimary,
-                                opacity: actionLoading || pressed ? 0.7 : 1,
-                              },
-                            ]}
+                            loading={actionLoading || isCompletingJob}
+                            disabled={actionLoading || isCompletingJob}
+                            size="sm"
+                            variant="primary"
+                            style={styles.actionButton}
                           >
-                            {actionLoading ? (
-                              <ActivityIndicator size="small" color={colors.textInverse} />
-                            ) : (
-                              <Ionicons name="checkmark-circle" size={20} color={colors.textInverse} />
-                            )}
-                          </Pressable>
+                            Stop
+                          </Button>
                         </>
                       );
                     }
@@ -826,14 +1233,13 @@ export default function JobDetailPage() {
                     return (
                       <Button
                         onPress={handleCompleteJob}
-                        loading={actionLoading}
-                        disabled={actionLoading}
+                        loading={actionLoading || isCompletingJob}
+                        disabled={actionLoading || isCompletingJob}
                         size="sm"
                         variant="primary"
-                        icon="checkmark-circle"
                         style={styles.actionButton}
                       >
-                        {isRecording || isConnected || isConnecting ? 'Complete Job' : 'Complete'}
+                        {isCompletingJob ? 'Processing...' : 'Stop'}
                       </Button>
                     );
                   })()}
@@ -923,7 +1329,6 @@ export default function JobDetailPage() {
         >
           {TABS.map((tab) => {
             const isActive = activeTab === tab.key;
-            const showBadge = tab.key === 'transcription' && effectiveTurns.length > 0;
             
             return (
               <Pressable
@@ -942,11 +1347,6 @@ export default function JobDetailPage() {
                   size={24}
                   color={isActive ? colors.primary : colors.iconSecondary}
                 />
-                {showBadge && (
-                  <View style={[styles.badge, { backgroundColor: colors.error }]}>
-                    <ThemedText style={styles.badgeText}>{effectiveTurns.length}</ThemedText>
-                  </View>
-                )}
               </Pressable>
             );
           })}

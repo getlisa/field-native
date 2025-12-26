@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 export default {
   expo: {
-    name: 'Field TechCopilot',
+    name: 'Clara Tech Copilot',
     slug: 'field',
     version: '1.0.0',
     orientation: 'portrait',
@@ -10,9 +10,12 @@ export default {
     scheme: 'field',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
+    updates: {
+      url: 'https://u.expo.dev/dbcac3d2-0bae-4ccf-ae06-71eddb096c0c',
+    },
     ios: {
       supportsTablet: true,
-      buildNumber: '2',
+      runtimeVersion: '1.0.0',
       infoPlist: {
         // Microphone permission (for live transcription)
         NSMicrophoneUsageDescription: 'This app needs access to your microphone for live transcription during job visits.',
@@ -28,12 +31,13 @@ export default {
         UIBackgroundModes: ['audio'],
       },
       bundleIdentifier: 'com.justclara.field',
+      usesNonExemptEncryption: false,
     },
     android: {
+      runtimeVersion: '1.0.0',
       adaptiveIcon: {
-        backgroundColor: '#E6F4FE',
+        backgroundColor: '#e0f2fe', // primaryLight from theme
         foregroundImage: './assets/images/android-icon-foreground.png',
-        backgroundImage: './assets/images/android-icon-background.png',
         monochromeImage: './assets/images/android-icon-monochrome.png',
       },
       edgeToEdgeEnabled: true,
@@ -76,9 +80,9 @@ export default {
           image: './assets/images/splash-icon.png',
           imageWidth: 200,
           resizeMode: 'contain',
-          backgroundColor: '#ffffff',
+          backgroundColor: '#ffffff', // background from theme (light)
           dark: {
-            backgroundColor: '#000000',
+            backgroundColor: '#000000', // background from theme (dark)
           },
         },
       ],

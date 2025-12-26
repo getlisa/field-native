@@ -12,24 +12,29 @@ import {
   Pressable,
   Platform,
   KeyboardAvoidingView,
+  Dimensions,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 
 import { ThemedText } from '@/components/themed-text';
 import { Badge, Button, Card, CardBody, CardFooter, CardHeader } from '@/components/ui';
 import { useTheme } from '@/contexts/ThemeContext';
 import { Spacing, FontSizes, BorderRadius } from '@/constants/theme';
-import type { Job, JobStatus } from '@/services/jobService';
+import type { Job, JobStatus, JobFilterOptions } from '@/services/jobService';
 import type { User } from '@/store/useAuthStore';
 import { jobService, type CreateJobRequest } from '@/services/jobService';
 import { usersService } from '@/services/usersService';
 
 type Props = {
-  onRefresh: () => void;
+  onRefresh: (filters?: JobFilterOptions) => void;
   onJobPress?: (job: Job) => void;
   jobs: Job[];
   loading: boolean;
   error?: string | null;
   currentUser?: User | null;
+  currentFilters?: JobFilterOptions;
+  onFiltersChange?: (filters: JobFilterOptions | undefined) => void;
 };
 
 const STATUS_CONFIG: Record<
@@ -94,19 +99,62 @@ const JobCard: React.FC<JobCardProps> = ({ job, onPress }) => {
   );
 };
 
-export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading, error, currentUser }) => {
+export const JobsList: React.FC<Props> = ({ 
+  onRefresh, 
+  onJobPress, 
+  jobs, 
+  loading, 
+  error, 
+  currentUser,
+  currentFilters,
+  onFiltersChange 
+}) => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<JobStatus | 'all'>('all');
   const [filterFrom, setFilterFrom] = useState<string>('');
   const [filterTo, setFilterTo] = useState<string>('');
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isTechSelectOpen, setIsTechSelectOpen] = useState(false);
+  
+  // Date picker states
+  const [showFromPicker, setShowFromPicker] = useState(false);
+  const [showToPicker, setShowToPicker] = useState(false);
+  const [fromDate, setFromDate] = useState<Date>(new Date());
+  const [toDate, setToDate] = useState<Date>(new Date());
+  
+  // Debounce timer ref
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // Initialize filter state from currentFilters prop
+  useEffect(() => {
+    if (currentFilters) {
+      if (currentFilters.status) {
+        setFilterStatus(currentFilters.status);
+      }
+      if (currentFilters.start_timestamp_from) {
+        const dateStr = currentFilters.start_timestamp_from.split('T')[0];
+        setFilterFrom(dateStr);
+      }
+      if (currentFilters.start_timestamp_to) {
+        const dateStr = currentFilters.start_timestamp_to.split('T')[0];
+        setFilterTo(dateStr);
+      }
+      if (currentFilters.job_target_name) {
+        setSearch(currentFilters.job_target_name);
+        setDebouncedSearch(currentFilters.job_target_name);
+      }
+    }
+  }, []); // Only run once on mount
 
   const [customerName, setCustomerName] = useState('');
   const [address, setAddress] = useState('');
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 16)); // yyyy-mm-ddThh:mm
+  const [startDateValue, setStartDateValue] = useState<Date>(new Date()); // Date object for picker
+  const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [description, setDescription] = useState('');
   const [technicianId, setTechnicianId] = useState<string>(currentUser?.id ?? 'unassigned');
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -171,24 +219,66 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
     if (isCreateModalOpen && !isTechnician) {
       loadTechnicians();
     }
+    // Reset date picker state when modal closes (only relevant for iOS now)
+    if (!isCreateModalOpen && Platform.OS === 'ios') {
+      setShowStartDatePicker(false);
+    }
   }, [isCreateModalOpen, isTechnician, loadTechnicians]);
 
-  const filteredJobs = useMemo(() => {
-    return jobs.filter((job) => {
-      const matchesSearch =
-        search.trim().length === 0 ||
-        job.job_target_name?.toLowerCase().includes(search.toLowerCase()) ||
-        job.address?.toLowerCase().includes(search.toLowerCase());
-
-      const matchesStatus = filterStatus === 'all' ? true : job.status === filterStatus;
-
-      const start = new Date(job.start_timestamp).getTime();
-      const fromOk = filterFrom ? start >= new Date(filterFrom).getTime() : true;
-      const toOk = filterTo ? start <= new Date(filterTo).getTime() : true;
-
-      return matchesSearch && matchesStatus && fromOk && toOk;
-    });
-  }, [jobs, search, filterStatus, filterFrom, filterTo]);
+  // Debounce search input - update debouncedSearch after 500ms of no typing
+  useEffect(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    
+    debounceTimerRef.current = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 500);
+    
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [search]);
+  
+  // Track previous debouncedSearch to avoid unnecessary API calls
+  const prevDebouncedSearchRef = useRef<string>('');
+  const isInitialMountRef = useRef(true);
+  
+  // Trigger server-side search when debouncedSearch changes
+  useEffect(() => {
+    // Skip on initial mount (filters are already applied from props)
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      prevDebouncedSearchRef.current = debouncedSearch;
+      return;
+    }
+    
+    // Skip if debouncedSearch hasn't actually changed
+    if (prevDebouncedSearchRef.current === debouncedSearch) {
+      return;
+    }
+    
+    prevDebouncedSearchRef.current = debouncedSearch;
+    
+    // Build filter options with current filters + search
+    const filterOptions: JobFilterOptions = { ...currentFilters };
+    
+    if (debouncedSearch.trim()) {
+      filterOptions.job_target_name = debouncedSearch.trim();
+    } else {
+      // Remove job_target_name if search is cleared
+      delete filterOptions.job_target_name;
+    }
+    
+    // Update parent's filter state and trigger refresh
+    onFiltersChange?.(Object.keys(filterOptions).length > 0 ? filterOptions : undefined);
+    onRefresh(filterOptions);
+  }, [debouncedSearch, onRefresh, onFiltersChange, currentFilters]); // Only trigger on debouncedSearch change
+  
+  // No client-side filtering - all filtering is server-side
+  const filteredJobs = jobs;
 
   // Blur search input when keyboard hides (fixes Android caret lingering)
   useEffect(() => {
@@ -216,7 +306,8 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
     if (!validateForm()) return;
     setSubmitting(true);
     try {
-      const startDateISO = new Date(startDate).toISOString();
+      // Use startDateValue (Date object) instead of startDate (string)
+      const startDateISO = startDateValue.toISOString();
       const payload: CreateJobRequest = {
         job_target_name: customerName.trim(),
         address: address.trim(),
@@ -235,7 +326,9 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
       setCustomerName('');
       setAddress('');
       setDescription('');
-      setStartDate(new Date().toISOString().slice(0, 16));
+      const now = new Date();
+      setStartDate(now.toISOString().slice(0, 16));
+      setStartDateValue(now);
       if (!isTechnician) {
         setTechnicianId('unassigned');
       } else if (currentUser?.id) {
@@ -249,7 +342,7 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
     } finally {
       setSubmitting(false);
     }
-  }, [customerName, address, startDate, description, technicianId, isTechnician, currentUser, onRefresh]);
+  }, [customerName, address, startDateValue, description, technicianId, isTechnician, currentUser, onRefresh]);
 
   const renderSection = (title: string, data: Job[]) => {
     if (data.length === 0) return null;
@@ -313,7 +406,10 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
         refreshControl={
           <RefreshControl
             refreshing={loading}
-            onRefresh={onRefresh}
+            onRefresh={() => {
+              // Use current filters when refreshing
+              onRefresh(currentFilters);
+            }}
             tintColor={colors.primary}
             colors={[colors.primary]}
             progressViewOffset={Spacing.lg}
@@ -376,23 +472,71 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
               ))}
             </View>
 
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>From (YYYY-MM-DD)</ThemedText>
-            <TextInput
-              value={filterFrom}
-              onChangeText={setFilterFrom}
-              placeholder="e.g., 2025-12-01"
-              placeholderTextColor={colors.textTertiary}
-              style={[styles.modalInput, { borderColor: colors.border, color: colors.text }]}
-            />
+            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>From Date</ThemedText>
+            <TouchableOpacity
+              style={[styles.modalInput, styles.datePickerButton, { borderColor: colors.border }]}
+              onPress={() => setShowFromPicker(true)}
+            >
+              <ThemedText style={{ color: filterFrom ? colors.text : colors.textTertiary }}>
+                {filterFrom || 'Select start date'}
+              </ThemedText>
+              <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+            {filterFrom && (
+              <TouchableOpacity
+                onPress={() => setFilterFrom('')}
+                style={{ alignSelf: 'flex-start', marginTop: -Spacing.xs }}
+              >
+                <ThemedText style={{ color: colors.primary, fontSize: FontSizes.sm }}>Clear</ThemedText>
+              </TouchableOpacity>
+            )}
+            {showFromPicker && (
+              <DateTimePicker
+                value={fromDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, selectedDate) => {
+                  setShowFromPicker(Platform.OS === 'ios');
+                  if (selectedDate) {
+                    setFromDate(selectedDate);
+                    setFilterFrom(selectedDate.toISOString().split('T')[0]); // YYYY-MM-DD
+                  }
+                }}
+              />
+            )}
 
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>To (YYYY-MM-DD)</ThemedText>
-            <TextInput
-              value={filterTo}
-              onChangeText={setFilterTo}
-              placeholder="e.g., 2025-12-31"
-              placeholderTextColor={colors.textTertiary}
-              style={[styles.modalInput, { borderColor: colors.border, color: colors.text }]}
-            />
+            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>To Date</ThemedText>
+            <TouchableOpacity
+              style={[styles.modalInput, styles.datePickerButton, { borderColor: colors.border }]}
+              onPress={() => setShowToPicker(true)}
+            >
+              <ThemedText style={{ color: filterTo ? colors.text : colors.textTertiary }}>
+                {filterTo || 'Select end date'}
+              </ThemedText>
+              <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+            {filterTo && (
+              <TouchableOpacity
+                onPress={() => setFilterTo('')}
+                style={{ alignSelf: 'flex-start', marginTop: -Spacing.xs }}
+              >
+                <ThemedText style={{ color: colors.primary, fontSize: FontSizes.sm }}>Clear</ThemedText>
+              </TouchableOpacity>
+            )}
+            {showToPicker && (
+              <DateTimePicker
+                value={toDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(event, selectedDate) => {
+                  setShowToPicker(Platform.OS === 'ios');
+                  if (selectedDate) {
+                    setToDate(selectedDate);
+                    setFilterTo(selectedDate.toISOString().split('T')[0]); // YYYY-MM-DD
+                  }
+                }}
+              />
+            )}
 
             <View style={styles.modalButtons}>
               <Button variant="secondary" size="sm" onPress={() => setIsFilterModalOpen(false)}>
@@ -403,6 +547,43 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
                 size="sm"
                 onPress={() => {
                   setIsFilterModalOpen(false);
+                  
+                  // Build filter options for server-side filtering
+                  const filterOptions: JobFilterOptions = { ...currentFilters };
+                  
+                  if (filterStatus !== 'all') {
+                    filterOptions.status = filterStatus as JobStatus;
+                  } else {
+                    // Remove status filter if 'all' is selected
+                    delete filterOptions.status;
+                  }
+                  
+                  if (filterFrom) {
+                    // Convert YYYY-MM-DD to ISO 8601 with time
+                    filterOptions.start_timestamp_from = `${filterFrom}T00:00:00Z`;
+                  } else {
+                    // Remove date filter if cleared
+                    delete filterOptions.start_timestamp_from;
+                  }
+                  
+                  if (filterTo) {
+                    // Convert YYYY-MM-DD to ISO 8601 with time (end of day)
+                    filterOptions.start_timestamp_to = `${filterTo}T23:59:59Z`;
+                  } else {
+                    // Remove date filter if cleared
+                    delete filterOptions.start_timestamp_to;
+                  }
+                  
+                  // Preserve search if it exists
+                  if (debouncedSearch.trim()) {
+                    filterOptions.job_target_name = debouncedSearch.trim();
+                  }
+                  
+                  // Update parent's filter state
+                  onFiltersChange?.(Object.keys(filterOptions).length > 0 ? filterOptions : undefined);
+                  
+                  // Apply server-side filters
+                  onRefresh(filterOptions);
                 }}
               >
                 Apply Filters
@@ -423,15 +604,42 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={{ flex: 1, justifyContent: 'flex-end' }}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
           >
-          <Pressable
-              style={[
-                styles.modalContent,
-                { backgroundColor: colors.backgroundSecondary },
-                Platform.OS === 'android' && keyboardHeight > 0 && { paddingBottom: keyboardHeight },
-              ]}
-            onPress={(e) => e.stopPropagation()}
-          >
+            <SafeAreaView edges={['bottom']} style={{ backgroundColor: colors.backgroundSecondary }}>
+              <Pressable
+                style={[
+                  styles.modalContent,
+                  styles.createJobModalContent,
+                  { backgroundColor: colors.backgroundSecondary },
+                  {
+                    maxHeight: Platform.OS === 'android' && keyboardHeight > 0
+                      ? Dimensions.get('window').height - keyboardHeight - insets.top - 20 // Account for keyboard + top safe area
+                      : Dimensions.get('window').height - insets.top - insets.bottom - 20, // Account for top + bottom safe areas
+                  },
+                  Platform.OS === 'android' && keyboardHeight > 0 && {
+                    marginBottom: keyboardHeight,
+                  },
+                ]}
+                onPress={(e) => e.stopPropagation()}
+              >
+              <ScrollView
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.modalScrollContent}
+                bounces={false}
+                style={[
+                  styles.modalScrollView,
+                  {
+                    // Calculate maxHeight dynamically: window height - top safe area - bottom safe area - footer height (approx 80px) - padding
+                    maxHeight: Platform.OS === 'android' && keyboardHeight > 0
+                      ? Dimensions.get('window').height - keyboardHeight - insets.top - 80 - 40
+                      : Dimensions.get('window').height - insets.top - insets.bottom - 80 - 40,
+                  },
+                ]}
+                nestedScrollEnabled={true}
+                scrollEnabled={true}
+              >
             <ThemedText type="subtitle" style={styles.modalTitle}>
               Add New Service Job
             </ThemedText>
@@ -470,16 +678,72 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
             )}
 
             <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Start Date & Time *</ThemedText>
-            <TextInput
-              value={startDate}
-              onChangeText={setStartDate}
-              placeholder="YYYY-MM-DDTHH:mm"
-              placeholderTextColor={colors.textTertiary}
+            <TouchableOpacity
               style={[
                 styles.modalInput,
-                { borderColor: formErrors.startDate ? colors.error : colors.border, color: colors.text },
+                styles.datePickerButton,
+                { borderColor: formErrors.startDate ? colors.error : colors.border },
               ]}
-            />
+              onPress={() => {
+                if (Platform.OS === 'android') {
+                  // Use imperative API on Android to avoid unmount errors
+                  // First show date picker
+                  DateTimePickerAndroid.open({
+                    value: startDateValue,
+                    mode: 'date',
+                    onChange: (dateEvent, selectedDate) => {
+                      if (dateEvent.type === 'set' && selectedDate) {
+                        // After date is selected, show time picker
+                        DateTimePickerAndroid.open({
+                          value: selectedDate,
+                          mode: 'time',
+                          onChange: (timeEvent, selectedTime) => {
+                            if (timeEvent.type === 'set' && selectedTime) {
+                              setStartDateValue(selectedTime);
+                              setStartDate(selectedTime.toISOString().slice(0, 16));
+                            } else if (timeEvent.type === 'dismissed') {
+                              // If time picker was dismissed, still use the date selected
+                              setStartDateValue(selectedDate);
+                              setStartDate(selectedDate.toISOString().slice(0, 16));
+                            }
+                          },
+                        });
+                      }
+                    },
+                  });
+                } else {
+                  // On iOS, show the picker component
+                  setShowStartDatePicker(true);
+                }
+              }}
+            >
+              <ThemedText style={{ color: colors.text }}>
+                {startDateValue.toLocaleString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </ThemedText>
+              <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+            {/* Only render DateTimePicker component on iOS */}
+            {Platform.OS === 'ios' && showStartDatePicker && (
+              <DateTimePicker
+                value={startDateValue}
+                mode="datetime"
+                display="spinner"
+                onChange={(event, selectedDate) => {
+                  // On iOS, hide after selection
+                  setShowStartDatePicker(false);
+                  if (selectedDate) {
+                    setStartDateValue(selectedDate);
+                    setStartDate(selectedDate.toISOString().slice(0, 16));
+                  }
+                }}
+              />
+            )}
             {formErrors.startDate && (
               <ThemedText style={[styles.errorText, { color: colors.error }]}>{formErrors.startDate}</ThemedText>
             )}
@@ -533,16 +797,22 @@ export const JobsList: React.FC<Props> = ({ onRefresh, onJobPress, jobs, loading
               style={[styles.modalInput, styles.textArea, { borderColor: colors.border, color: colors.text }]}
               multiline
             />
-
-            <View style={styles.modalButtons}>
+              </ScrollView>
+              
+              {/* Sticky Footer */}
+              <View style={[styles.modalFooter, { 
+                backgroundColor: colors.backgroundSecondary,
+                borderTopColor: colors.border,
+              }]}>
               <Button variant="secondary" size="sm" onPress={() => setIsCreateModalOpen(false)}>
                 Cancel
               </Button>
               <Button variant="primary" size="sm" loading={submitting} onPress={handleSubmit}>
                 Create Job
               </Button>
-            </View>
-          </Pressable>
+              </View>
+            </Pressable>
+            </SafeAreaView>
           </KeyboardAvoidingView>
         </Pressable>
       </Modal>
@@ -735,6 +1005,30 @@ const styles = StyleSheet.create({
     borderTopRightRadius: BorderRadius['2xl'],
     gap: Spacing.sm,
   },
+  createJobModalContent: {
+    flexDirection: 'column',
+    padding: 0, // Remove padding, we add it to ScrollView content
+    // maxHeight is set dynamically to account for safe areas
+  },
+  modalScrollView: {
+    // No flex: 1 - let it size naturally based on content
+    // maxHeight will constrain it when content is too large
+    // Max height is calculated dynamically to account for safe areas and footer
+  },
+  modalScrollContent: {
+    padding: Spacing.lg,
+    paddingBottom: Spacing.md,
+    // No flexGrow - let content size naturally, ScrollView will scroll only when needed
+  },
+  modalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: Spacing.sm,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderTopWidth: 1,
+  },
   modalTitle: {
     marginBottom: Spacing.xs,
   },
@@ -748,6 +1042,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     fontSize: FontSizes.md,
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minHeight: 48,
   },
   textArea: {
     height: 100,

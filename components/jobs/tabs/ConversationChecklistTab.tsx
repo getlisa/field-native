@@ -7,7 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useJobDetailContext } from '@/contexts/JobDetailContext';
 import { companyConfigsService, type ChecklistItem } from '@/services/companyConfigsService';
-import type { ChecklistItemData } from '@/services/jobService';
+import { jobService, type ChecklistItemData } from '@/services/jobService';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
 
 interface ChecklistDisplayItem {
@@ -19,34 +19,45 @@ interface ChecklistDisplayItem {
 }
 
 export const ConversationChecklistTab: React.FC = () => {
-  console.log('[ConversationChecklistTab] Rendering');
   const { colors } = useTheme();
-  const { job } = useJobDetailContext();
+  const { job, jobId } = useJobDetailContext();
 
   const isScheduled = job?.status === 'scheduled';
   const isOngoing = job?.status === 'ongoing';
   const isCompleted = job?.status === 'completed';
-  console.log('isScheduled && !!job?.company_id', job?.company_id);
 
-  // Fetch static checklists for scheduled jobs
-  const { data: companyConfigs, isLoading: isLoadingConfigs } = useQuery({
-    queryKey: ['companyConfigs', job?.company_id],
-    queryFn: () => companyConfigsService.getCompanyConfigs(job!.company_id),
-    enabled: isScheduled && !!job?.company_id,
+  // Fetch job data periodically for ongoing jobs to get updated checklist data
+  const { data: refreshedJob, isLoading: isLoadingJob } = useQuery({
+    queryKey: ['job', jobId],
+    queryFn: () => jobService.getJob(jobId!),
+    enabled: isOngoing && !!jobId,
+    refetchInterval: 10000, // Refetch every 10 seconds for ongoing jobs
   });
 
-  // Transform data based on job status
+  // Use refreshed job data if available, otherwise use context job
+  const currentJob = refreshedJob || job;
+
+  // Fetch static checklists for scheduled jobs (and as fallback)
+  const { data: companyConfigs, isLoading: isLoadingConfigs } = useQuery({
+    queryKey: ['companyConfigs', currentJob?.company_id],
+    queryFn: () => companyConfigsService.getCompanyConfigs(currentJob!.company_id),
+    enabled: !!currentJob?.company_id,
+  });
+
+  // Transform data based on job status - always show checklist items
   const checklistItems: ChecklistDisplayItem[] = React.useMemo(() => {
     // For ongoing and completed jobs, use dynamic checklists from job visit session data
-    if ((isOngoing || isCompleted) && job?.visit_sessions?.checklists?.items) {
-      return job.visit_sessions.checklists.items.map((item: ChecklistItemData) => ({
+    if ((isOngoing || isCompleted) && currentJob?.visit_sessions?.checklists?.items) {
+      return currentJob.visit_sessions.checklists.items.map((item: ChecklistItemData) => ({
         id: item.id,
         label: item.label,
         completed: item.completed,
         count: item.transcription_turn_id?.length || 0,
       }));
-    } else if (isScheduled && companyConfigs?.checklists) {
-      // Use static checklists from company config for scheduled jobs
+    }
+    
+    // Always fall back to company configs checklists (for scheduled jobs or when visit session data is not available)
+    if (companyConfigs?.checklists && companyConfigs.checklists.length > 0) {
       return companyConfigs.checklists.map((item: ChecklistItem, index: number) => ({
         id: `checklist-${index}`,
         label: item.label,
@@ -55,32 +66,43 @@ export const ConversationChecklistTab: React.FC = () => {
         count: 0,
       }));
     }
+    
+    // Final fallback: return empty array (should rarely happen if company configs are set up)
     return [];
-  }, [isOngoing, isCompleted, isScheduled, job?.visit_sessions?.checklists, companyConfigs]);
+  }, [isOngoing, isCompleted, currentJob?.visit_sessions?.checklists, companyConfigs]);
 
   // Calculate completion stats
   const completedCount = checklistItems.filter((item) => item.completed).length;
   const totalCount = checklistItems.length;
-  const completionPercentage = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
-  // Render star rating (0-5 stars based on completion)
-  const stars = Math.round((completionPercentage / 100) * 5);
+  // Get star rating from visit_session_metrics when job is completed
+  const starRating = isCompleted && currentJob?.visit_session_metrics?.star_rating 
+    ? currentJob.visit_session_metrics.star_rating 
+    : null;
+
+  // Render star rating (use metrics star_rating for completed jobs)
   const renderStars = () => {
+    if (starRating === null) return null;
+    
+    const filledStars = Math.round(starRating);
     return (
       <View style={styles.starsContainer}>
         {[1, 2, 3, 4, 5].map((star) => (
           <Ionicons
             key={star}
-            name={star <= stars ? 'star' : 'star-outline'}
+            name={star <= filledStars ? 'star' : 'star-outline'}
             size={16}
-            color={star <= stars ? '#fbbf24' : colors.iconSecondary}
+            color={star <= filledStars ? '#fbbf24' : colors.iconSecondary}
           />
         ))}
+        <ThemedText style={[styles.starRatingText, { color: colors.textSecondary }]}>
+          ({starRating})
+        </ThemedText>
       </View>
     );
   };
 
-  if (isLoadingConfigs) {
+  if (isLoadingConfigs || (isOngoing && isLoadingJob)) {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -91,23 +113,8 @@ export const ConversationChecklistTab: React.FC = () => {
     );
   }
 
-  if (checklistItems.length === 0) {
-    return (
-      <View style={styles.centerContainer}>
-        <Ionicons name="checkmark-circle-outline" size={64} color={colors.iconSecondary} />
-        <ThemedText style={[styles.emptyTitle, { color: colors.text }]}>
-          No Checklist Available
-        </ThemedText>
-        <ThemedText style={[styles.emptyText, { color: colors.textSecondary }]}>
-          {isScheduled
-            ? 'No checklist configured for this company'
-            : isOngoing || isCompleted
-            ? 'No checklist data recorded for this visit'
-            : 'Checklist will appear once the job is started'}
-        </ThemedText>
-      </View>
-    );
-  }
+  // Never show empty state - always show checklist items (even if empty from company configs)
+  // This ensures the checklist is always visible for all job statuses
 
   return (
     <ScrollView
@@ -122,10 +129,7 @@ export const ConversationChecklistTab: React.FC = () => {
           <ThemedText style={styles.headerTitle}>Conversation Checklist</ThemedText>
         </View>
         <View style={styles.headerRight}>
-          {renderStars()}
-          <ThemedText style={[styles.countBadge, { color: colors.textSecondary }]}>
-            ({completedCount})
-          </ThemedText>
+          {isCompleted && starRating !== null ? renderStars() : null}
         </View>
       </View>
 
@@ -170,8 +174,8 @@ export const ConversationChecklistTab: React.FC = () => {
               </View>
             </View>
 
-            {/* Count badge (only for ongoing jobs with completed items) */}
-            {isOngoing && item.completed && item.count && item.count > 0 && (
+            {/* Count badge (show for all completed items with count > 0) */}
+            {item.completed && item.count && item.count > 0 && (
               <View style={[styles.countBadgeContainer, { backgroundColor: colors.backgroundTertiary }]}>
                 <ThemedText style={[styles.countBadgeText, { color: colors.textSecondary }]}>
                   {item.count}x
@@ -238,7 +242,13 @@ const styles = StyleSheet.create({
   },
   starsContainer: {
     flexDirection: 'row',
-    gap: 2,
+    alignItems: 'center',
+    gap: 4,
+  },
+  starRatingText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '500',
+    marginLeft: 2,
   },
   countBadge: {
     fontSize: FontSizes.sm,

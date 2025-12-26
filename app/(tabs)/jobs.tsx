@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,7 +11,7 @@ import { Button } from '@/components/ui';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useAuth } from '@/hooks/useAuth';
 import { useJobs } from '@/hooks/useJobs';
-import type { Job } from '@/services/jobService';
+import type { Job, JobFilterOptions } from '@/services/jobService';
 import { Spacing, FontSizes } from '@/constants/theme';
 
 export default function JobsTab() {
@@ -18,12 +19,25 @@ export default function JobsTab() {
   const { colors } = useTheme();
   const { isAuthenticated, companyId: authedCompanyId, user } = useAuth();
   const { jobs, error, loading, fetchJobs } = useJobs();
+  
+  // Store current filter state to persist across refreshes
+  const [currentFilters, setCurrentFilters] = useState<JobFilterOptions | undefined>(undefined);
 
+  // Initial load
   useEffect(() => {
     if (authedCompanyId) {
-      fetchJobs(authedCompanyId);
+      fetchJobs(authedCompanyId, currentFilters);
     }
   }, [authedCompanyId, fetchJobs]);
+
+  // Refetch jobs when navigating back to this tab (e.g., after completing a job)
+  useFocusEffect(
+    useCallback(() => {
+      if (authedCompanyId) {
+        fetchJobs(authedCompanyId, currentFilters);
+      }
+    }, [authedCompanyId, fetchJobs, currentFilters])
+  );
 
   const handleJobPress = useCallback(
     (job: Job) => {
@@ -32,11 +46,19 @@ export default function JobsTab() {
     [router]
   );
 
-  const handleRefresh = useCallback(() => {
-    if (authedCompanyId) {
-      fetchJobs(authedCompanyId);
+  const handleRefresh = useCallback((filters?: JobFilterOptions) => {
+    // Update stored filters if new ones are provided
+    if (filters !== undefined) {
+      setCurrentFilters(filters);
     }
-  }, [authedCompanyId, fetchJobs]);
+    
+    // Always use current filters (either newly provided or stored)
+    const filtersToUse = filters !== undefined ? filters : currentFilters;
+    
+    if (authedCompanyId) {
+      fetchJobs(authedCompanyId, filtersToUse);
+    }
+  }, [authedCompanyId, fetchJobs, currentFilters]);
 
   // Not authenticated state
   if (!isAuthenticated) {
@@ -87,7 +109,7 @@ export default function JobsTab() {
           <ThemedText style={[styles.messageText, { color: colors.textSecondary }]}>
             {error}
           </ThemedText>
-          <Button variant="secondary" onPress={handleRefresh} icon="refresh-outline">
+          <Button variant="secondary" onPress={() => handleRefresh()} icon="refresh-outline">
             Try Again
           </Button>
         </View>
@@ -104,6 +126,8 @@ export default function JobsTab() {
         loading={loading}
         error={error}
         currentUser={user}
+        currentFilters={currentFilters}
+        onFiltersChange={setCurrentFilters}
       />
     </SafeAreaView>
   );

@@ -3,8 +3,10 @@
  */
 
 export interface AudioChunkData {
-  /** Base64-encoded PCM16 audio data */
+  /** Base64-encoded PCM16 audio data (kept for backward compatibility) */
   base64: string;
+  /** Raw PCM16 audio data as ArrayBuffer */
+  buffer: ArrayBuffer;
   /** Size in bytes of the raw PCM16 data */
   byteSize: number;
   /** RMS value for debugging (0-32768) */

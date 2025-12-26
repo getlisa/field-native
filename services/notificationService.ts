@@ -22,15 +22,14 @@ export function initializeNotificationHandler(): void {
   if (notificationHandlerInitialized) return;
   
   try {
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-  }),
-});
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowBanner: true,  // Show notification banner at top of screen
+        shouldShowList: true,    // Show notification in notification list
+        shouldPlaySound: true,   // Play notification sound
+        shouldSetBadge: true,    // Update app badge count
+      }),
+    });
     notificationHandlerInitialized = true;
   } catch (error) {
     console.error('[NotificationService] Error initializing notification handler:', error);
@@ -227,6 +226,7 @@ class NotificationService implements INotificationService {
         suggestion: data.suggestion,
         severity: data.severity,
         timestamp: data.timestamp,
+        tab: 'askAI', // Redirect to AskAI tab instead of Transcription tab
       },
       sound: true,
       priority,

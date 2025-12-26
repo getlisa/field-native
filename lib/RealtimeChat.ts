@@ -11,7 +11,6 @@
  * Note: Audio capture is handled separately by the caller (React Native audio APIs)
  */
 
-import { AppState, AppStateStatus } from 'react-native';
 import useAuthStore from '@/store/useAuthStore';
 import { API_BASE_URL } from './apiClient';
 
@@ -106,81 +105,15 @@ export class RealtimeChat {
   private options: RealtimeChatOptions;
   private sequenceNumber = 0;
   private isReady = false;
-  // Disable auto-reconnect when user intentionally ends/cancels/disconnects
-  private shouldAutoReconnect = true;
   private manuallyStopped = false;
-  private isReconnecting = false;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectDelay = 2000;
-  
-  // Background state management
-  private appStateSubscription: any = null;
-  private currentAppState: AppStateStatus = AppState.currentState;
-  private isInBackground = false;
-  
-  // Connection health monitoring (using audio stream as keepalive)
-  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
-  private healthCheckIntervalMs = 10000; // Check every 10 seconds
-  private lastMessageReceived = Date.now();
-  private lastChunkSent = Date.now();
-  private connectionDeadTimeoutMs = 30000; // 30 seconds without any response = dead
 
   constructor(options: RealtimeChatOptions) {
     this.options = options;
-    this.setupAppStateListener();
   }
-
-  private setupAppStateListener(): void {
-    // Listen to app state changes to handle background/foreground transitions
-    this.appStateSubscription = AppState.addEventListener('change', this.handleAppStateChange);
-    
-    if (__DEV__) {
-      console.log('[Transcription] 📱 App state listener setup');
-    }
-  }
-
-  private handleAppStateChange = (nextAppState: AppStateStatus): void => {
-    const wasBackground = this.isInBackground;
-    this.isInBackground = nextAppState === 'background' || nextAppState === 'inactive';
-    
-    if (__DEV__) {
-      console.log(`[Transcription] 📱 App state changed: ${this.currentAppState} → ${nextAppState}`);
-    }
-
-    // Moving to background
-    if (!wasBackground && this.isInBackground) {
-      if (__DEV__) {
-        console.log('[Transcription] 🌙 App entering background - maintaining WebSocket connection');
-      }
-      // Don't disconnect! Keep WebSocket alive for background audio
-      // The keepalive will maintain the connection
-    }
-    
-    // Returning to foreground
-    if (wasBackground && !this.isInBackground && nextAppState === 'active') {
-      if (__DEV__) {
-        console.log('[Transcription] ☀️ App returning to foreground');
-      }
-      
-      // Check if connection is still alive
-      if (this.ws && this.ws.readyState !== WebSocket.OPEN && !this.manuallyStopped) {
-        if (__DEV__) {
-          console.log('[Transcription] 🔄 WebSocket disconnected while in background, reconnecting...');
-        }
-        this.attemptReconnect();
-      }
-    }
-
-    this.currentAppState = nextAppState;
-  };
 
   async init(): Promise<void> {
     try {
       this.manuallyStopped = false;
-      this.isReconnecting = false;
-      this.reconnectAttempts = 0;
-      this.shouldAutoReconnect = true;
 
       const { visitSessionId } = this.options;
 
@@ -237,46 +170,41 @@ export class RealtimeChat {
 
       const timeout = setTimeout(() => {
         if (__DEV__) {
-          console.log('[Transcription] ⏱️ Timeout - no ready message received in 30s');
+          console.log('[Transcription] ⏱️ Timeout - no ready message received in 10s');
         }
         this.cleanup();
-        reject(new Error('Timeout waiting for server ready message'));
-      }, 30000);
+        const error = new Error('Unable to start recording. Please try again.');
+        this.options.onError?.(error);
+        reject(error);
+      }, 10000);
 
       this.ws.onopen = () => {
         if (__DEV__) {
           console.log('[Transcription] 🟢 WebSocket connected, waiting for server ready...');
         }
         this.options.onConnectionStateChange?.(true);
-        
-        // Start connection health monitoring (audio stream acts as keepalive)
-        this.startHealthCheck();
       };
 
       this.ws.onmessage = (event: WebSocketMessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        // Track message receipt for connection health monitoring
-        this.lastMessageReceived = Date.now();
+        try {
+          const data = JSON.parse(event.data);
 
-        if (data.type === 'ready' && !this.isReady) {
-          clearTimeout(timeout);
-          this.isReady = true;
-          this.reconnectAttempts = 0;
+          if (data.type === 'ready' && !this.isReady) {
+            clearTimeout(timeout);
+            this.isReady = true;
 
-          if (__DEV__) {
-            console.log('[Transcription] ✅ Server ready - starting audio capture');
+            if (__DEV__) {
+              console.log('[Transcription] ✅ Server ready - starting audio capture');
+            }
+
+            this.options.onReady?.();
+            resolve();
+          } else {
+            this.handleMessage(data);
           }
-
-          this.options.onReady?.();
-          resolve();
-        } else {
-          this.handleMessage(data);
+        } catch (err) {
+          // Non-JSON messages are not logged to reduce noise
         }
-      } catch (err) {
-        // Non-JSON messages are not logged to reduce noise
-      }
       };
 
       this.ws.onerror = (error: Event) => {
@@ -290,51 +218,13 @@ export class RealtimeChat {
         if (__DEV__) {
           console.log('[Transcription] 🔴 WebSocket closed:', { 
             code: event.code, 
-            reason: event.reason,
-            inBackground: this.isInBackground 
+            reason: event.reason
           });
         }
         this.options.onConnectionStateChange?.(false);
         this.isReady = false;
-        
-        // Stop health check when connection closes
-        this.stopHealthCheck();
-
-        // Only auto-reconnect if not manually stopped
-        // Keep reconnecting even in background for continuous streaming
-        if (this.shouldAutoReconnect && !this.manuallyStopped && !this.isReconnecting) {
-          if (__DEV__) {
-            console.log('[Transcription] 🔄 Connection lost, attempting reconnect...');
-          }
-          this.attemptReconnect();
-        }
       };
     });
-  }
-
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      if (__DEV__) {
-        console.log('[Transcription] Max reconnect attempts reached');
-      }
-      return;
-    }
-
-    this.isReconnecting = true;
-    this.reconnectAttempts++;
-
-    if (__DEV__) {
-      console.log(`[Transcription] 🔄 Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
-    }
-
-    setTimeout(() => {
-      if (!this.manuallyStopped) {
-        this.init().catch((err) => {
-          console.error('[Transcription] Reconnect failed:', err);
-          this.isReconnecting = false;
-        });
-      }
-    }, this.reconnectDelay * this.reconnectAttempts);
   }
 
   private handleMessage(message: any): void {
@@ -398,9 +288,7 @@ export class RealtimeChat {
         if (__DEV__) {
           console.log('[Transcription] ✅ Session ended');
         }
-        // Server intentionally ended session - don't auto-reconnect
         this.manuallyStopped = true;
-        this.shouldAutoReconnect = false;
         this.options.onSessionEnded?.(message.audioUrl);
         break;
 
@@ -422,7 +310,7 @@ export class RealtimeChat {
     }
   }
 
-  sendAudioChunk(base64Data: string): void {
+  sendAudioChunk(audioBuffer: ArrayBuffer): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isReady) {
       if (__DEV__ && this.sequenceNumber === 0) {
         console.log('[Transcription] ⚠️ Cannot send audio - WebSocket not ready');
@@ -430,46 +318,75 @@ export class RealtimeChat {
       return;
     }
 
-    const chunkId = `chunk-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Track when we send chunks - this acts as our keepalive
-    this.lastChunkSent = Date.now();
-
     // Log first chunk and then every 50th chunk to reduce spam
     if (__DEV__ && (this.sequenceNumber === 0 || this.sequenceNumber % 50 === 0)) {
-      console.log(`[Transcription] 🎵 Sent audio chunk #${this.sequenceNumber} (${Math.round(base64Data.length / 1024)}KB)`);
+      console.log(`[Transcription] 🎵 Sent audio chunk #${this.sequenceNumber} (${Math.round(audioBuffer.byteLength / 1024)}KB)`);
     }
 
-    this.ws.send(
-      JSON.stringify({
-        type: 'audio-chunk',
-        chunkId,
-        sequenceNumber: this.sequenceNumber++,
-        data: base64Data,
-      })
-    );
+    // Create buffer with 0x00 prefix + raw PCM16 data
+    const audioData = new Uint8Array(audioBuffer);
+    const combinedBuffer = new Uint8Array(1 + audioData.length);
+    combinedBuffer[0] = 0x00; // Audio message type prefix
+    combinedBuffer.set(audioData, 1);
+
+    // Send as binary (slice to ensure we only send the exact bytes)
+    this.ws.send(combinedBuffer.buffer.slice(0, combinedBuffer.byteLength));
+    this.sequenceNumber++;
   }
 
   end(): void {
-    // User-initiated end; avoid auto-reconnect/recreate
-    this.shouldAutoReconnect = false;
     this.manuallyStopped = true;
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (!this.ws) {
       if (__DEV__) {
-        console.log('[Transcription] 📤 Sending end signal');
+        console.warn('[RealtimeChat] ⚠️ Cannot send end event - WebSocket is null');
       }
-      this.ws.send(JSON.stringify({ type: 'end' }));
+      return;
+    }
+    
+    const wsState = this.ws.readyState;
+    if (wsState === WebSocket.OPEN) {
+      if (__DEV__) {
+        console.log('[RealtimeChat] 📤 Sending end signal');
+      }
+      try {
+        // Prepend 0x01 byte and send JSON as binary
+        const jsonData = JSON.stringify({ type: 'end' });
+        const jsonBytes = new TextEncoder().encode(jsonData);
+        const combinedBuffer = new Uint8Array(1 + jsonBytes.length);
+        combinedBuffer[0] = 0x01; // Control message type prefix
+        combinedBuffer.set(jsonBytes, 1);
+        this.ws.send(combinedBuffer.buffer.slice(0, combinedBuffer.byteLength));
+        if (__DEV__) {
+          console.log('[RealtimeChat] ✅ End signal sent successfully');
+        }
+      } catch (error) {
+        console.error('[RealtimeChat] ❌ Error sending end signal:', error);
+      }
+    } else {
+      if (__DEV__) {
+        console.warn('[RealtimeChat] ⚠️ Cannot send end event - WebSocket state is not OPEN', {
+          readyState: wsState,
+          stateName: wsState === WebSocket.CONNECTING ? 'CONNECTING' : 
+                     wsState === WebSocket.CLOSING ? 'CLOSING' : 
+                     wsState === WebSocket.CLOSED ? 'CLOSED' : 'UNKNOWN',
+        });
+      }
     }
   }
 
   cancel(): void {
-    this.shouldAutoReconnect = false;
     this.manuallyStopped = true;
     if (this.ws?.readyState === WebSocket.OPEN) {
       if (__DEV__) {
         console.log('[Transcription] 🚫 Sending cancel signal...');
       }
-      this.ws.send(JSON.stringify({ type: 'cancel' }));
+      // Prepend 0x01 byte and send JSON as binary
+      const jsonData = JSON.stringify({ type: 'cancel' });
+      const jsonBytes = new TextEncoder().encode(jsonData);
+      const combinedBuffer = new Uint8Array(1 + jsonBytes.length);
+      combinedBuffer[0] = 0x01; // Control message type prefix
+      combinedBuffer.set(jsonBytes, 1);
+      this.ws.send(combinedBuffer.buffer.slice(0, combinedBuffer.byteLength));
     }
   }
 
@@ -477,7 +394,6 @@ export class RealtimeChat {
     if (__DEV__) {
       console.log('[Transcription] 🔌 Disconnecting...');
     }
-    this.shouldAutoReconnect = false;
     this.manuallyStopped = true;
     
     try {
@@ -493,73 +409,10 @@ export class RealtimeChat {
     return this.ws?.readyState === WebSocket.OPEN && this.isReady;
   }
 
-  private startHealthCheck(): void {
-    // Clear any existing health check
-    this.stopHealthCheck();
-    
-    if (__DEV__) {
-      console.log(`[Transcription] 💓 Starting connection health monitoring (${this.healthCheckIntervalMs}ms intervals)`);
-    }
-
-    this.healthCheckInterval = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        if (__DEV__) {
-          console.log('[Transcription] ⚠️ Health check: WebSocket not open, stopping');
-        }
-        this.stopHealthCheck();
-        return;
-      }
-
-      const now = Date.now();
-      const timeSinceLastMessage = now - this.lastMessageReceived;
-      const timeSinceLastChunk = now - this.lastChunkSent;
-
-      // If we're actively sending audio but not receiving any responses, connection is dead
-      if (timeSinceLastChunk < this.healthCheckIntervalMs * 2 && timeSinceLastMessage > this.connectionDeadTimeoutMs) {
-        if (__DEV__) {
-          console.log('[Transcription] ❌ Connection appears dead:', {
-            timeSinceLastMessage: `${Math.round(timeSinceLastMessage / 1000)}s`,
-            timeSinceLastChunk: `${Math.round(timeSinceLastChunk / 1000)}s`,
-            inBackground: this.isInBackground
-          });
-        }
-        
-        // Connection is dead, trigger reconnect
-        this.stopHealthCheck();
-        if (this.shouldAutoReconnect && !this.manuallyStopped) {
-          this.ws.close();
-          // onclose handler will trigger reconnect
-        }
-        return;
-      }
-
-      // Log health status in background mode
-      if (__DEV__ && this.isInBackground && timeSinceLastChunk < this.healthCheckIntervalMs * 2) {
-        console.log('[Transcription] 💓 Connection healthy (background mode):', {
-          lastMessage: `${Math.round(timeSinceLastMessage / 1000)}s ago`,
-          lastChunk: `${Math.round(timeSinceLastChunk / 1000)}s ago`
-        });
-      }
-    }, this.healthCheckIntervalMs);
-  }
-
-  private stopHealthCheck(): void {
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-      this.healthCheckInterval = null;
-      if (__DEV__) {
-        console.log('[Transcription] 💓 Health monitoring stopped');
-      }
-    }
-  }
-
   private cleanup(): void {
     if (__DEV__) {
       console.log('[Transcription] 🧹 Cleanup starting...');
     }
-
-    // Stop health monitoring
-    this.stopHealthCheck();
 
     // Clean up WebSocket with guards
     if (this.ws) {
@@ -577,19 +430,6 @@ export class RealtimeChat {
       this.ws = null;
     }
 
-    // Remove app state listener
-    if (this.appStateSubscription) {
-      try {
-        this.appStateSubscription.remove();
-        this.appStateSubscription = null;
-        if (__DEV__) {
-          console.log('[Transcription] 📱 App state listener removed');
-        }
-      } catch (error) {
-        console.warn('[Transcription] Error removing app state listener:', error);
-      }
-    }
-
     this.isReady = false;
     
     if (__DEV__) {
@@ -605,7 +445,6 @@ export class RealtimeChat {
     if (__DEV__) {
       console.log('[Transcription] 💥 Destroying RealtimeChat instance');
     }
-    this.shouldAutoReconnect = false;
     this.manuallyStopped = true;
     this.disconnect();
   }

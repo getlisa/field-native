@@ -38,14 +38,14 @@ export function useStreamingTTS() {
   const playingUriRef = useRef<string | null>(null);
   const playNextRef = useRef<(() => void) | undefined>(undefined);
   const isProcessingNextRef = useRef(false); // Lock to prevent concurrent playNext calls
-  const currentQueueIndexRef = useRef(0); // Track which item we're currently playing
 
   // Create ONE player instance that stays alive
   // Use empty source initially, we'll use replace() to change the source
   const player = useAudioPlayer('');
-  const statusCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPositionRef = useRef<number>(0);
+  const positionStuckCountRef = useRef<number>(0);
 
-  // Set up polling for playback status
+  // Monitor playback status with improved detection
   useEffect(() => {
     if (!player) return;
 
@@ -53,46 +53,78 @@ export function useStreamingTTS() {
       try {
         if (!player) return;
         
-        // Check if audio finished playing
-        if (!player.playing && isPlayingRef.current && playingUriRef.current) {
-          console.log('[useStreamingTTS] Audio chunk finished playing');
-          
-          // Clean up current file
-          FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
-          playingUriRef.current = null;
-          
-          isPlayingRef.current = false;
-          isProcessingNextRef.current = false; // Release lock when playback ends
-          
-          // Increment the queue index since we finished playing an item
-          currentQueueIndexRef.current++;
-          
-          // Play next item with small delay to ensure clean state
-          setTimeout(() => playNextRef.current?.(), 100);
-        }
+        const isPlaying = player.playing ?? false;
+        const currentPosition = player.currentTime ?? 0;
+        const duration = player.duration ?? 0;
         
-        // Update speaking state based on player status
-        if (player.playing && !isPlayingRef.current) {
+        // Update playing state when playback starts
+        if (isPlaying && !isPlayingRef.current) {
+          console.log('[useStreamingTTS] Playback started');
           isPlayingRef.current = true;
           setIsSpeaking(true);
+          lastPositionRef.current = currentPosition;
+          positionStuckCountRef.current = 0;
         }
+        
+        // Detect when audio finishes - multiple conditions for reliability
+        const playbackFinished = isPlayingRef.current && playingUriRef.current && (
+          // Condition 1: Player stopped playing
+          (!isPlaying && currentPosition > 0) ||
+          // Condition 2: Reached the end (with small tolerance)
+          (duration > 0 && currentPosition >= duration - 0.1) ||
+          // Condition 3: Position stuck (not advancing for multiple checks)
+          (isPlaying && currentPosition > 0 && currentPosition === lastPositionRef.current && ++positionStuckCountRef.current > 5)
+        );
+        
+        if (playbackFinished) {
+          console.log('[useStreamingTTS] Audio chunk finished, queue size:', queueRef.current.length, {
+            isPlaying,
+            currentPosition,
+            duration,
+            positionStuckCount: positionStuckCountRef.current
+          });
+          
+          // Clean up current file
+          if (playingUriRef.current) {
+            FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
+            playingUriRef.current = null;
+          }
+          
+          isPlayingRef.current = false;
+          isProcessingNextRef.current = false;
+          lastPositionRef.current = 0;
+          positionStuckCountRef.current = 0;
+          
+          // Check if there are more items in queue
+          if (queueRef.current.length > 0) {
+            console.log('[useStreamingTTS] More chunks in queue, playing next');
+            setTimeout(() => playNextRef.current?.(), 50);
+          } else {
+            console.log('[useStreamingTTS] No more chunks, stopping');
+            setIsSpeaking(false);
+          }
+        }
+        
+        // Update last position for stuck detection
+        if (currentPosition !== lastPositionRef.current) {
+          lastPositionRef.current = currentPosition;
+          positionStuckCountRef.current = 0;
+        }
+        
       } catch (error) {
-        // Handle released player gracefully
-        console.warn('[useStreamingTTS] Error in status check (player may be released):', error);
-        isPlayingRef.current = false;
-        isProcessingNextRef.current = false;
+        console.warn('[useStreamingTTS] Error in status check:', error);
+        if (isPlayingRef.current) {
+          isPlayingRef.current = false;
+          isProcessingNextRef.current = false;
+          setIsSpeaking(false);
+        }
       }
     };
 
-    // Poll for status updates
-    statusCheckIntervalRef.current = setInterval(checkPlaybackStatus, 100);
+    // Poll every 200ms for status updates
+    const interval = setInterval(checkPlaybackStatus, 200);
 
-    return () => {
-      if (statusCheckIntervalRef.current) {
-        clearInterval(statusCheckIntervalRef.current);
-        statusCheckIntervalRef.current = null;
-      }
-    };
+    return () => clearInterval(interval);
   }, [player]);
 
   const generateAudio = useCallback(async (item: AudioQueueItem) => {
@@ -184,60 +216,50 @@ export function useStreamingTTS() {
   }, []);
 
   const playNext = useCallback(() => {
-    // Guard against concurrent execution
-    if (isProcessingNextRef.current) {
-      console.log('[useStreamingTTS] playNext already in progress, skipping');
+    // Already playing - will be called when current finishes
+    if (isPlayingRef.current) {
+      console.log('[useStreamingTTS] Already playing, will be called when current finishes');
       return;
     }
-    
+
     if (!player) {
       console.warn('[useStreamingTTS] No player available');
       return;
     }
+
+    // Find the first item with ready audio (like web version)
+    const readyIndex = queueRef.current.findIndex(item => item.audioUri);
     
-    // Check if already playing
-    try {
-      if (isPlayingRef.current || player.playing) {
-        console.log('[useStreamingTTS] Already playing, will be called when current finishes');
-        return;
+    if (readyIndex === -1) {
+      // No audio ready yet
+      console.log('[useStreamingTTS] No audio ready yet, queue size:', queueRef.current.length);
+      if (queueRef.current.length === 0) {
+        setIsSpeaking(false);
+        isPlayingRef.current = false;
+        isProcessingNextRef.current = false;
       }
-    } catch (error) {
-      console.warn('[useStreamingTTS] Error checking player state:', error);
       return;
     }
 
-    // Acquire lock
+    // If there are items before this one without audio, keep waiting (maintain order)
+    if (readyIndex > 0) {
+      console.log(`[useStreamingTTS] Waiting for ${readyIndex} chunk(s) to be ready before playing`);
+      setTimeout(() => playNextRef.current?.(), 50);
+      return;
+    }
+
+    // First item is ready - start playing
+    isPlayingRef.current = true;
     isProcessingNextRef.current = true;
-
-    // Check if there are any items in the queue
-    if (queueRef.current.length === 0) {
-      console.log('[useStreamingTTS] Queue is empty');
-      setIsSpeaking(false);
-      isPlayingRef.current = false;
-      isProcessingNextRef.current = false;
-      currentQueueIndexRef.current = 0;
-      return;
-    }
-
-    // Get the first item (don't shift yet - only shift after successful play)
-    const firstItem = queueRef.current[0];
+    setIsSpeaking(true);
     
-    // Check if first item has audio ready
-    if (!firstItem.audioUri) {
-      console.log('[useStreamingTTS] First chunk not ready yet, waiting...');
-      isProcessingNextRef.current = false;
-      // Retry after a short delay
-      setTimeout(() => playNextRef.current?.(), 100);
-      return;
-    }
-
-    const audioUri = firstItem.audioUri;
+    const item = queueRef.current.shift()!;
+    const audioUri = item.audioUri!;
     playingUriRef.current = audioUri;
 
-    console.log('[useStreamingTTS] Playing audio:', audioUri);
+    console.log('[useStreamingTTS] Playing audio chunk, remaining in queue:', queueRef.current.length);
     
     try {
-      // Use replace() to change the audio source on the same player instance
       player.replace(audioUri);
       
       // Small delay before starting playback to allow source to load
@@ -245,36 +267,29 @@ export function useStreamingTTS() {
         try {
           if (player) {
             player.play();
-            isPlayingRef.current = true;
-            setIsSpeaking(true);
-            
-            // NOW shift the queue after successful play start
-            queueRef.current.shift();
-            console.log('[useStreamingTTS] Queue shifted, remaining items:', queueRef.current.length);
+            console.log('[useStreamingTTS] Audio playback started successfully');
           }
         } catch (error) {
           console.error('[useStreamingTTS] Error starting playback:', error);
-          isProcessingNextRef.current = false;
           isPlayingRef.current = false;
-          // Clean up and try next
+          isProcessingNextRef.current = false;
           if (playingUriRef.current) {
             FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
             playingUriRef.current = null;
           }
-          queueRef.current.shift(); // Remove failed item
+          // Try next item
           setTimeout(() => playNextRef.current?.(), 100);
         }
       }, 100);
     } catch (error) {
       console.error('[useStreamingTTS] Error replacing audio source:', error);
-      isProcessingNextRef.current = false;
       isPlayingRef.current = false;
-      // Clean up and try next
+      isProcessingNextRef.current = false;
       if (playingUriRef.current) {
         FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
         playingUriRef.current = null;
       }
-      queueRef.current.shift(); // Remove failed item
+      // Try next item
       setTimeout(() => playNextRef.current?.(), 100);
     }
   }, [player]);
@@ -303,6 +318,7 @@ export function useStreamingTTS() {
       
       const newItem = { text: textToSpeak };
       queueRef.current.push(newItem);
+      console.log('[useStreamingTTS] Added chunk to queue, new size:', queueRef.current.length);
       setIsSpeaking(true); // reflect speaking/queued state immediately
       // Start generating audio immediately in parallel
       generateAudio(newItem);
@@ -315,6 +331,7 @@ export function useStreamingTTS() {
           
           const newItem = { text: textToSpeak };
           queueRef.current.push(newItem);
+          console.log('[useStreamingTTS] Added buffered chunk to queue, new size:', queueRef.current.length);
           setIsSpeaking(true); // reflect speaking/queued state immediately
           
           // Start generating audio immediately in parallel
@@ -336,6 +353,7 @@ export function useStreamingTTS() {
       
       const newItem = { text: textToSpeak };
       queueRef.current.push(newItem);
+      console.log('[useStreamingTTS] Flushed remaining text to queue, size:', queueRef.current.length);
       
       // Start generating audio immediately in parallel
       generateAudio(newItem);
@@ -378,7 +396,6 @@ export function useStreamingTTS() {
     textBufferRef.current = '';
     isPlayingRef.current = false;
     isProcessingNextRef.current = false;
-    currentQueueIndexRef.current = 0;
     setIsSpeaking(false);
     setIsLoading(false);
   }, [player]);

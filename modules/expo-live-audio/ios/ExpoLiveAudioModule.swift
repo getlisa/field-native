@@ -79,7 +79,7 @@ public class ExpoLiveAudioModule: Module {
   private func configureAudioSession(config: [String: Any]) throws {
     let audioSession = AVAudioSession.sharedInstance()
     
-    // Parse category
+    // Parse category (default to PlayAndRecord for voice input)
     let categoryString = config["category"] as? String ?? "PlayAndRecord"
     var category: AVAudioSession.Category
     switch categoryString {
@@ -91,42 +91,82 @@ public class ExpoLiveAudioModule: Module {
       category = .playAndRecord
     }
     
-    // Parse mode
-    let modeString = config["mode"] as? String ?? "Default"
-    var mode: AVAudioSession.Mode = .default
+    // Parse mode - DEFAULT TO VOICE CHAT for transcription clarity
+    let modeString = config["mode"] as? String ?? "VoiceChat"
+    var mode: AVAudioSession.Mode = .voiceChat // Best for speech transcription with noise gating
     switch modeString {
     case "Measurement":
-      mode = .measurement
+      mode = .measurement  // Reduces gain - not recommended for voice!
     case "VideoRecording":
-      mode = .videoRecording
+      mode = .videoRecording  // Sensitive but less optimized for speech
     case "VoiceChat":
-      mode = .voiceChat
-    default:
+      mode = .voiceChat  // Best for transcription - optimized for speech frequencies + aggressive noise gating
+    case "Default":
       mode = .default
+    default:
+      mode = .voiceChat
     }
     
-    // Parse options
-    var options: AVAudioSession.CategoryOptions = []
-    if config["allowBluetooth"] as? Bool == true {
+    // Parse options - ADD DEFAULT BLUETOOTH SUPPORT & SPEAKER MODE
+    var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker]
+    if config["allowBluetooth"] as? Bool ?? true {  // Default to true
       options.insert(.allowBluetooth)
     }
     if config["allowBluetoothA2DP"] as? Bool == true {
       options.insert(.allowBluetoothA2DP)
     }
     
-    // Try to set category first
-    do {
-      try audioSession.setCategory(category, mode: mode, options: options)
-      print("[ExpoLiveAudio] ✅ Audio session category configured (category: \(categoryString), mode: \(modeString))")
-    } catch {
-      print("[ExpoLiveAudio] ⚠️ Could not set audio category: \(error)")
-      // Don't throw - try to activate anyway with existing category
+    // Set category with options
+    try audioSession.setCategory(category, mode: mode, options: options)
+    print("[ExpoLiveAudio] ✅ Audio session category configured (category: \(categoryString), mode: \(modeString))")
+    
+    // NOTE: Manual input gain control is intentionally NOT set here
+    // Manual gain (setInputGain) conflicts with Voice Processing AGC
+    // By letting setVoiceProcessingEnabled(true) handle gain, the iPhone will:
+    // - Automatically boost voice when technician moves away from phone
+    // - Automatically lower gain when technician gets close
+    // - Use multi-mic array for "Null Steering" to ignore background noise
+    // This results in cleaner audio with less static than manual gain control
+    if audioSession.isInputGainSettable {
+      print("[ExpoLiveAudio] ℹ️ Input gain is settable but using automatic AGC via Voice Processing for better clarity")
+    } else {
+      print("[ExpoLiveAudio] ℹ️ Input gain not settable (using automatic AGC via Voice Processing)")
     }
     
-    // Try to activate
+    // OPTIMIZE: Select the best microphone for voice chat (prefer bottom mic for speakerphone)
+    if let availableInputs = audioSession.availableInputs {
+      for input in availableInputs {
+        if input.portType == .builtInMic {
+          do {
+            try audioSession.setPreferredInput(input)
+            print("[ExpoLiveAudio] 🎤 Selected built-in microphone")
+            
+            // Try to select the bottom or front microphone data source (best for distant voice)
+            if let dataSources = input.dataSources {
+              for dataSource in dataSources {
+                if dataSource.orientation == .bottom || dataSource.orientation == .front {
+                  do {
+                    try input.setPreferredDataSource(dataSource)
+                    print("[ExpoLiveAudio] 🎤 Using \(dataSource.orientation == .bottom ? "bottom" : "front") microphone for better distant pickup")
+                    break
+                  } catch {
+                    print("[ExpoLiveAudio] ⚠️ Could not set preferred data source: \(error)")
+                  }
+                }
+              }
+            }
+          } catch {
+            print("[ExpoLiveAudio] ⚠️ Could not set preferred input: \(error)")
+          }
+          break
+        }
+      }
+    }
+    
+    // Activate session
     do {
       try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-      print("[ExpoLiveAudio] ✅ Audio session activated")
+      print("[ExpoLiveAudio] ✅ Audio session activated with voice optimizations")
     } catch {
       print("[ExpoLiveAudio] ⚠️ Could not activate audio session: \(error)")
       // Try one more time without options
@@ -176,7 +216,24 @@ public class ExpoLiveAudioModule: Module {
       throw NSError(domain: "ExpoLiveAudio", code: -3, userInfo: [NSLocalizedDescriptionKey: "Failed to get input node"])
     }
     
-    // Get the hardware's native format - we MUST tap with this format or compatible format
+    // CRITICAL: Enable Hardware Voice Processing I/O Unit
+    // This activates the iPhone's system-level AGC, Noise Suppression, and Multi-Mic Array processing
+    // This is the "WhatsApp-style" clean voice processing that eliminates static
+    do {
+      try input.setVoiceProcessingEnabled(true)
+      print("[ExpoLiveAudio] 🎙️ Voice Processing ENABLED")
+      
+      // Ensure bypass is false so the filters actually run (reduces static)
+      // Note: isVoiceProcessingBypassed is a property, not a method
+      input.isVoiceProcessingBypassed = false
+      print("[ExpoLiveAudio] 🎚️ Voice Processing Bypass DISABLED (filters active)")
+    } catch {
+      print("[ExpoLiveAudio] ⚠️ Voice Processing not supported on this device: \(error)")
+      // Continue anyway - older devices might not support it
+    }
+    
+    // IMPORTANT: When Voice Processing is enabled, iOS often forces hardware format to 48kHz
+    // Our converter already handles this, so this will work seamlessly
     let hardwareFormat = input.outputFormat(forBus: 0)
     print("[ExpoLiveAudio] 🎤 Hardware format: \(hardwareFormat.sampleRate)Hz, \(hardwareFormat.channelCount) ch, \(hardwareFormat.commonFormat.rawValue)")
     
@@ -304,19 +361,15 @@ public class ExpoLiveAudioModule: Module {
     
     // Build PCM16 interleaved data for output (LRLRLR... or just L for mono)
     let totalBytes = frameLength * channelCount * 2 // PCM16 = 2 bytes per sample
-    var audioData = Data(capacity: totalBytes)
+    var audioData: Data
     
     if channelCount == 1 {
-      // Mono: Direct copy from channel 0
+      // Mono: High-performance direct memory copy (eliminates jitter/static from looping)
       let channelData = int16ChannelData[0]
-      for frame in 0..<frameLength {
-        let sample = channelData[frame]
-        withUnsafeBytes(of: sample.littleEndian) { bytes in
-          audioData.append(contentsOf: bytes)
-        }
-      }
+      audioData = Data(bytes: channelData, count: frameLength * 2)
     } else {
-      // Multi-channel: Interleave channels
+      // Multi-channel: Interleave channels (but mono is recommended for field techs)
+      audioData = Data(capacity: totalBytes)
       for frame in 0..<frameLength {
         for channel in 0..<channelCount {
           let sample = int16ChannelData[channel][frame]

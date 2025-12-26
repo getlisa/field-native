@@ -8,10 +8,12 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "http://localhost:4000/api"
+        "EXPO_PUBLIC_API_BASE_URL": "http://localhost:4000/api",
+        "EXPO_PUBLIC_COPILOT_BASE_URL": "http://localhost:3000"
       }
     },
     "preview": {
+      "autoIncrement": true,
       "distribution": "store",
       "ios": {
         "simulator": false,
@@ -27,10 +29,16 @@
     },
     "production": {
       "autoIncrement": true,
+      "distribution": "store",
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
-      }
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      
+      "environment": "production"
     }
   },
   "submit": {

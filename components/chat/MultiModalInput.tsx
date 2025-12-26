@@ -70,6 +70,7 @@ interface MultiModalInputProps {
   onVoiceRecorded?: (result: VoiceRecordingResult) => void;
   isLoading: boolean;
   isSpeaking: boolean;
+  isTranscribing?: boolean;
   placeholder?: string;
   pendingImages?: PendingImage[];
   onRemovePendingImage?: (id: string) => void;
@@ -84,6 +85,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   onVoiceRecorded,
   isLoading,
   isSpeaking,
+  isTranscribing: isTranscribingProp = false,
   placeholder = 'Type a message...',
   pendingImages = [],
   onRemovePendingImage,
@@ -94,7 +96,9 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const { colors } = useTheme();
   const [textInput, setTextInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+  // Use prop if provided, otherwise fall back to local state (for backward compatibility)
+  const [isTranscribingLocal, setIsTranscribingLocal] = useState(false);
+  const isTranscribing = isTranscribingProp || isTranscribingLocal;
   const recorderRef = useRef<AudioRecorder | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
   const glowAnim = useRef(new Animated.Value(0)).current;
@@ -127,6 +131,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   const hasPendingImages = pendingImages.length > 0;
   const hasText = textInput.trim().length > 0;
+  // Text is always required (either typed or via voice transcription) for the /stream call
   const canSend = hasText && !isLoading && !isUploadingImages && !disabled;
 
   const handleSend = useCallback(() => {
@@ -287,7 +292,10 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
         // Provide recording result to parent component for processing
         if (onVoiceRecorded) {
-          setIsTranscribing(true);
+          // Only set local state if prop is not provided (backward compatibility)
+          if (!isTranscribingProp) {
+            setIsTranscribingLocal(true);
+          }
           try {
             await onVoiceRecorded({
               uri,
@@ -299,7 +307,10 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             console.error('[MultiModalInput] Voice processing error:', transcriptionError);
             Alert.alert('Voice Error', 'Could not process voice recording. Please try again.');
           } finally {
-            setIsTranscribing(false);
+            // Only clear local state if prop is not provided (backward compatibility)
+            if (!isTranscribingProp) {
+              setIsTranscribingLocal(false);
+            }
           }
         } else {
           // Fallback: notify via onSendMessage with structured data
@@ -315,7 +326,9 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         `Could not stop voice recording: ${error?.message || 'Unknown error'}`
       );
       setIsRecording(false);
-      setIsTranscribing(false);
+      if (!isTranscribingProp) {
+        setIsTranscribingLocal(false);
+      }
       recorderRef.current = null;
       recordingStartTimeRef.current = null;
     }
@@ -360,7 +373,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     try {
       const result = await mediaPicker.launchCamera({
         quality: 0.8,
-        allowsEditing: true,
+        allowsEditing: false,
       });
 
       if (!result.cancelled && result.assets.length > 0) {
@@ -478,7 +491,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         <TextInput
           value={textInput}
           onChangeText={setTextInput}
-          placeholder={hasPendingImages ? 'Ask about this image...' : placeholder}
+          placeholder={hasPendingImages ? 'Ask about this image... (or use mic button)' : placeholder}
           placeholderTextColor={colors.textTertiary}
           multiline
           editable={!isLoading && !isUploadingImages && !disabled}
@@ -502,27 +515,27 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             {isTranscribing ? (
               <ActivityIndicator size="small" color="#ffffff" />
             ) : isSpeaking ? (
-              <View style={styles.pauseIconContainer}>
+              <View style={styles.stopIconContainer}>
                 <Animated.View
                   style={[
-                    styles.pauseGlow,
+                    styles.stopPulse,
                     {
                       opacity: glowAnim.interpolate({
                         inputRange: [0, 1],
-                        outputRange: [0.3, 0.6],
+                        outputRange: [0.4, 0.1],
                       }),
                       transform: [
                         {
                           scale: glowAnim.interpolate({
                             inputRange: [0, 1],
-                            outputRange: [1, 1.2],
+                            outputRange: [1, 1.5],
                           }),
                         },
                       ],
                     },
                   ]}
                 />
-                <Ionicons name="pause" size={18} color="#ffffff" />
+                <Ionicons name="stop" size={18} color="#ffffff" />
               </View>
             ) : (
               <Ionicons name="mic" size={18} color={isRecording ? '#ffffff' : '#6b7280'} />
@@ -566,14 +579,14 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       </View>
 
       {/* Transcription Status */}
-      {isTranscribing && (
+      {/* {isTranscribing && (
         <View style={styles.statusContainer}>
           <ActivityIndicator size="small" color={colors.textSecondary} />
           <ThemedText style={[styles.statusText, { color: colors.textSecondary }]}>
             Processing your voice message...
           </ThemedText>
         </View>
-      )}
+      )} */}
     </View>
   );
 };
@@ -699,26 +712,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6b7280',
   },
-  pauseIconContainer: {
+  stopIconContainer: {
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
     width: 18,
     height: 18,
   },
-  pauseGlow: {
+  stopPulse: {
     position: 'absolute',
     width: 24,
     height: 24,
     borderRadius: 12,
     backgroundColor: '#0a7ea4',
-    opacity: 0.3,
-    // Animation for glowing effect
-    shadowColor: '#0a7ea4',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
-    elevation: 8,
   },
 });
 

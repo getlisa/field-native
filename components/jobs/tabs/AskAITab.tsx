@@ -38,6 +38,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import type { MediaAsset } from '@/lib/media';
 import type { Message, PendingImage } from '@/components/chat/types';
+import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
   const { job, jobId, canUseAskAI } = useJobDetailContext();
@@ -63,6 +64,31 @@ export const AskAITab: React.FC = () => {
   const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
 
   const isAllowed = canUseAskAI;
+
+  // Refresh access token on mount and every 10 minutes while on this page
+  useEffect(() => {
+    const refreshToken = async () => {
+      try {
+        await api.refreshAccessToken();
+        if (__DEV__) {
+          console.log('[AskAI] Access token refreshed');
+        }
+      } catch (error) {
+        console.warn('[AskAI] Failed to refresh access token:', error);
+      }
+    };
+
+    // Refresh immediately on mount
+    refreshToken();
+
+    // Set up interval to refresh every 10 minutes (600000 ms)
+    const interval = setInterval(refreshToken, 10 * 60 * 1000);
+
+    // Cleanup interval on unmount
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
 
   // Track keyboard height on Android to position input above keyboard
   useEffect(() => {
@@ -502,6 +528,7 @@ export const AskAITab: React.FC = () => {
   }, [stopTTS]);
 
   // Handle voice recordings - transcribe and send
+  // If there are pending images, automatically upload them with the transcribed text
   const handleVoiceRecorded = useCallback(
     async (result: VoiceRecordingResult) => {
       if (!isAllowed) return;
@@ -511,6 +538,7 @@ export const AskAITab: React.FC = () => {
         durationMs: result.durationMs,
         mimeType: result.mimeType,
         hasBase64: Boolean(result.base64Data),
+        hasPendingImages: pendingImages.length > 0,
       });
 
       const stripDataPrefix = (dataUri?: string) => {
@@ -549,20 +577,25 @@ export const AskAITab: React.FC = () => {
 
         console.log('[AskAI] Transcription successful:', resp?.text?.substring(0, 50));
 
+        // Set isTranscribing to false immediately after transcription completes
+        // (before calling handleSendMessage which might take a while with image uploads)
+        setIsTranscribing(false);
+
         if (resp?.text) {
-          await handleSendMessage(resp.text, 'voice');
+          // If there are pending images, send them with the transcribed text
+          // Otherwise, send as regular voice message
+          await handleSendMessage(resp.text, pendingImages.length > 0 ? 'image' : 'voice');
           return;
         }
 
         throw new Error('No transcription returned from voice service');
       } catch (error) {
         console.error('[AskAI] Voice transcription failed:', error);
+        setIsTranscribing(false); // Ensure state is cleared on error
         throw error; // Re-throw so MultiModalInput can surface the error
-      } finally {
-        setIsTranscribing(false);
       }
     },
-    [handleSendMessage, isAllowed]
+    [handleSendMessage, isAllowed, pendingImages.length]
   );
 
   // Render empty state
@@ -688,8 +721,9 @@ export const AskAITab: React.FC = () => {
           onSendMessage={handleSendMessage}
           onImageSelected={handleImageSelected}
           onVoiceRecorded={handleVoiceRecorded}
-          isLoading={isLoading || isTranscribing}
+          isLoading={isLoading}
           isSpeaking={isSpeaking}
+          isTranscribing={isTranscribing}
           placeholder="Ask anything..."
           pendingImages={pendingImages}
           onRemovePendingImage={handleRemovePendingImage}

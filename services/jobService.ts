@@ -38,6 +38,18 @@ export interface JobsListResponse {
 }
 
 /**
+ * Job Filter Options Interface (for query parameters)
+ */
+export interface JobFilterOptions {
+  skip?: number;
+  limit?: number;
+  status?: JobStatus;
+  job_target_name?: string;
+  start_timestamp_from?: string; // ISO 8601 format (e.g., 2024-01-01T00:00:00Z)
+  start_timestamp_to?: string;   // ISO 8601 format (e.g., 2024-12-31T23:59:59Z)
+}
+
+/**
  * Create Job Request Interface
  * Matches backend createJobSchema validation
  */
@@ -197,15 +209,33 @@ export interface TranscriptionTurn {
  */
 export const jobService = {
   /**
-   * Get jobs by company ID
+   * Get jobs by company ID with optional filters
    * @param companyId - Company ID
-   * @param skip - Number of records to skip (pagination)
-   * @param limit - Maximum number of records to return (pagination)
+   * @param options - Filter and pagination options
    * @returns List of jobs for the company with pagination
    */
-  getJobsByCompany: async (companyId: string, skip: number = 0, limit: number = 50): Promise<JobsListResponse> => {
+  getJobsByCompany: async (companyId: string, options?: JobFilterOptions): Promise<JobsListResponse> => {
+    const params: Record<string, any> = {
+      skip: options?.skip ?? 0,
+      limit: options?.limit ?? 50,
+    };
+
+    // Add optional filters if provided
+    if (options?.status) {
+      params.status = options.status;
+    }
+    if (options?.job_target_name) {
+      params.job_target_name = options.job_target_name;
+    }
+    if (options?.start_timestamp_from) {
+      params.start_timestamp_from = options.start_timestamp_from;
+    }
+    if (options?.start_timestamp_to) {
+      params.start_timestamp_to = options.start_timestamp_to;
+    }
+
     const response = await api.get<JobsListResponse>(`/jobs/company/${companyId}`, {
-      params: { skip, limit },
+      params,
     });
     return response;
   },

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
-import { StyleSheet, View, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, ActivityIndicator, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -86,6 +86,8 @@ interface KeyMomentProps {
   timestamp: string;
   mentionCount: string;
   excerpt: string;
+  turnText?: string;
+  onPress?: () => void;
 }
 
 const KeyMoment: React.FC<KeyMomentProps> = ({
@@ -94,12 +96,18 @@ const KeyMoment: React.FC<KeyMomentProps> = ({
   speaker,
   timestamp,
   mentionCount,
-  excerpt
+  excerpt,
+  turnText,
+  onPress,
 }) => {
   const { colors } = useTheme();
   
   return (
-    <View style={styles.keyMomentContainer}>
+    <Pressable 
+      style={styles.keyMomentContainer}
+      onPress={onPress}
+      disabled={!onPress}
+    >
       <View style={styles.timelineConnector}>
         <View style={[styles.timelineDot, { backgroundColor: colors.primary }]} />
         <View style={[styles.timelineLine, { backgroundColor: colors.border }]} />
@@ -133,17 +141,19 @@ const KeyMoment: React.FC<KeyMomentProps> = ({
             </View>
           </View>
           <ThemedText style={[styles.excerptText, { color: colors.text }]}>
-            {excerpt}
+            {turnText || excerpt}
           </ThemedText>
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 };
 
 export const InsightsTab: React.FC = () => {
   const { colors } = useTheme();
-  const { job, jobStatus, turns } = useJobDetailContext();
+  const context = useJobDetailContext();
+  const { job, jobStatus, turns, transcriptionScrollRef } = context;
+  const setActiveTab = (context as any).setActiveTab as ((tab: 'transcription' | 'askAI' | 'checklist' | 'insights') => void) | undefined;
 
   const isCompleted = jobStatus === 'completed';
   const visitSession = job?.visit_sessions;
@@ -353,18 +363,44 @@ export const InsightsTab: React.FC = () => {
               <View style={styles.keyMomentsTimeline}>
                 {mentionedItems.map((item, index) => {
                   const turnIds = item.transcription_turn_id || [];
-                  const firstTurnId = turnIds[0] || 'N/A';
+                  const firstTurnId = turnIds[0];
                   const mentionCount = turnIds.length;
+                  
+                  // Find the turn details from the turns array
+                  // transcription_turn_id is a number, so convert if needed
+                  const turnIdNum = typeof firstTurnId === 'string' ? parseInt(firstTurnId, 10) : firstTurnId;
+                  const turn = firstTurnId ? turns.find(t => t.turn_id === turnIdNum || t.id === firstTurnId || String(t.id) === String(firstTurnId)) : null;
+                  const turnText = turn?.text || item.label;
+                  const turnSpeaker = turn?.speaker || 'Technician';
+                  const turnTimestamp = turn?.timestamp 
+                    ? turn.timestamp.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    : 'N/A';
+                  
+                  const handlePress = () => {
+                    if (firstTurnId && setActiveTab && transcriptionScrollRef?.current) {
+                      // Navigate to transcription tab
+                      setActiveTab('transcription');
+                      // Scroll to the turn after a small delay to ensure tab is rendered
+                      setTimeout(() => {
+                        const scrollToTurnId = (transcriptionScrollRef.current as any)?.scrollToTurnId;
+                        if (scrollToTurnId) {
+                          scrollToTurnId(firstTurnId);
+                        }
+                      }, 300);
+                    }
+                  };
                   
                   return (
                     <KeyMoment
                       key={item.id}
                       step={item.label}
                       turnNumber={`Step ${index + 1}`}
-                      speaker="Technician"
-                      timestamp="23:44:36"
+                      speaker={turnSpeaker}
+                      timestamp={turnTimestamp}
                       mentionCount={`Mentioned ${mentionCount}x`}
                       excerpt={item.label}
+                      turnText={turnText}
+                      onPress={firstTurnId ? handlePress : undefined}
                     />
                   );
                 })}

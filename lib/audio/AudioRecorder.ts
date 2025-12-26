@@ -12,6 +12,7 @@
 import { AppState, type AppStateStatus, PermissionsAndroid, Platform } from 'react-native';
 import { createAudioProcessor, getNativeAudioConfig } from './processors';
 import type { AudioChunkData, AudioRecorderCallbacks, AudioRecorderConfig, IAudioProcessor } from './types';
+import { useRecordingStore } from '@/store/useRecordingStore';
 
 // Native modules (may be null in Expo Go)
 let BackgroundActions: any = null;
@@ -183,18 +184,19 @@ export class AudioRecorder {
         console.log('[Audio] → JobId:', this.jobId || 'undefined');
       }
 
-      // Configure iOS audio session for maximum microphone gain
+      // Configure iOS audio session for optimal transcription clarity
       // MUST be done BEFORE init() and start()
       if (Platform.OS === 'ios' && LiveAudioStream.configureAudioSession) {
         try {
           await LiveAudioStream.configureAudioSession({
             category: 'PlayAndRecord',
-            mode: 'Measurement', // Best for capturing all audio without AGC/processing
+            mode: 'VoiceChat', // Best for transcription - optimized for speech frequencies + aggressive noise gating
             allowBluetooth: true,
-            allowBluetoothA2DP: false,
+            allowBluetoothA2DP: true, // Ensures speaker doesn't cause echo
           });
           if (__DEV__) {
-            console.log('[Audio] ✅ iOS audio session configured for maximum gain');
+            console.log('[Audio] ✅ iOS audio session configured (VoiceChat mode + Hardware Voice Processing)');
+            console.log('[Audio] 🎙️ Multi-mic array enabled for noise suppression and null steering');
           }
           
           // Small delay to ensure audio session is fully configured
@@ -345,6 +347,8 @@ export class AudioRecorder {
 
     if (nextAppState === 'background' && this.isRecording) {
       console.log('[Audio] 📱 App in background, audio continues via background service');
+      // Set flag to false to suppress recording confirmation dialog when app is opened from notification
+      useRecordingStore.getState().setShouldShowRecordingConfirmation(false);
     }
   };
 

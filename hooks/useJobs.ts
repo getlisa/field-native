@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 
-import { jobService, type Job } from '@/services/jobService';
+import { jobService, type Job, type JobFilterOptions } from '@/services/jobService';
 import { useAuthStore } from '@/store/useAuthStore';
 
 type JobsState = {
@@ -16,7 +16,7 @@ export const useJobs = () => {
     loading: false,
   });
 
-  const fetchJobs = useCallback(async (companyId?: string, skip = 0, limit = 50) => {
+  const fetchJobs = useCallback(async (companyId?: string, options?: JobFilterOptions) => {
     const resolvedCompanyId = companyId ?? useAuthStore.getState().user?.company_id?.toString();
     if (!resolvedCompanyId) {
       setState((prev) => ({
@@ -29,7 +29,7 @@ export const useJobs = () => {
 
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const response = await jobService.getJobsByCompany(resolvedCompanyId, skip, limit);
+      const response = await jobService.getJobsByCompany(resolvedCompanyId, options);
       setState({
         jobs: response.jobs,
         error: null,

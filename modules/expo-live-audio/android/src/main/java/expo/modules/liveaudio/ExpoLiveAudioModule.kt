@@ -3,6 +3,8 @@ package expo.modules.liveaudio
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Base64
 import android.util.Log
 import expo.modules.kotlin.modules.Module
@@ -21,14 +23,22 @@ class ExpoLiveAudioModule : Module() {
   private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
   private var bufferSize = 4096
   
-  // Audio source (Android specific)
-  private var audioSource = MediaRecorder.AudioSource.VOICE_RECOGNITION
+  // Audio source (Android specific) - CHANGED DEFAULT for better distant voice pickup
+  private var audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION
+  
+  // Audio effects for better voice capture
+  private var automaticGainControl: AutomaticGainControl? = null
+  private var noiseSuppressor: NoiseSuppressor? = null
   
   // Recording state
   private var audioRecord: AudioRecord? = null
   private var isRecording = false
   private var isInitialized = false
   private var recordingJob: Job? = null
+  
+  // Configuration flags
+  private var enableAGC = true
+  private var enableNoiseSuppression = true
   
   // Scope for coroutines
   private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -49,11 +59,27 @@ class ExpoLiveAudioModule : Module() {
       channelConfig = if (channelsValue == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
       bufferSize = (config["bufferSize"] as? Number)?.toInt() ?: 4096
       
-      // Android specific: audio source
-      audioSource = (config["audioSource"] as? Number)?.toInt() ?: MediaRecorder.AudioSource.VOICE_RECOGNITION
+      // Android specific: audio source (UPDATED MAPPING for better voice input)
+      val audioSourceString = config["audioSource"] as? String
+      audioSource = when (audioSourceString) {
+        "VOICE_COMMUNICATION" -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        "MIC" -> MediaRecorder.AudioSource.MIC
+        "CAMCORDER" -> MediaRecorder.AudioSource.CAMCORDER
+        "VOICE_RECOGNITION" -> MediaRecorder.AudioSource.VOICE_RECOGNITION
+        "UNPROCESSED" -> if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+          MediaRecorder.AudioSource.UNPROCESSED
+        } else {
+          MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        }
+        else -> MediaRecorder.AudioSource.VOICE_COMMUNICATION // Default for WhatsApp-style voice chat
+      }
+      
+      // Audio processing options
+      enableAGC = (config["enableAGC"] as? Boolean) ?: true
+      enableNoiseSuppression = (config["enableNoiseSuppression"] as? Boolean) ?: true
       
       isInitialized = true
-      Log.i("ExpoLiveAudio", "✅ Initialized (sampleRate: $sampleRate, channels: $channelsValue, bufferSize: $bufferSize)")
+      Log.i("ExpoLiveAudio", "✅ Initialized (sampleRate: $sampleRate, channels: $channelsValue, bufferSize: $bufferSize, audioSource: $audioSource, AGC: $enableAGC, NS: $enableNoiseSuppression)")
     }
     
     // Start recording
@@ -72,12 +98,31 @@ class ExpoLiveAudioModule : Module() {
       stopRecording()
     }
     
-    // Configure audio session (Android - no-op, kept for API compatibility)
+    // Configure audio session (Android - configure audio source)
     AsyncFunction("configureAudioSession") { config: Map<String, Any>, promise: Promise ->
-      // Android doesn't use audio session like iOS
-      // This is kept for API compatibility
-      Log.d("ExpoLiveAudio", "configureAudioSession called (Android - no-op)")
-      promise.resolve(null)
+      try {
+        // On Android, we can update audio source preference
+        val audioSourceString = config["audioSource"] as? String
+        if (audioSourceString != null) {
+          audioSource = when (audioSourceString) {
+            "VOICE_COMMUNICATION" -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            "MIC" -> MediaRecorder.AudioSource.MIC
+            "CAMCORDER" -> MediaRecorder.AudioSource.CAMCORDER
+            "VOICE_RECOGNITION" -> MediaRecorder.AudioSource.VOICE_RECOGNITION
+            "UNPROCESSED" -> if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+              MediaRecorder.AudioSource.UNPROCESSED
+            } else {
+              MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            }
+            else -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+          }
+          Log.d("ExpoLiveAudio", "✅ Audio source configured: $audioSource")
+        }
+        
+        promise.resolve(null)
+      } catch (e: Exception) {
+        promise.reject("CONFIG_ERROR", "Failed to configure audio: ${e.message}", e)
+      }
     }
   }
   
@@ -120,6 +165,9 @@ class ExpoLiveAudioModule : Module() {
         throw IllegalStateException("AudioRecord initialization failed")
       }
       
+      // Setup audio effects for better voice capture (AGC, Noise Suppression)
+      setupAudioEffects(record.audioSessionId)
+      
       // Start recording
       record.startRecording()
       isRecording = true
@@ -138,10 +186,11 @@ class ExpoLiveAudioModule : Module() {
         }
       }
       
-      Log.i("ExpoLiveAudio", "▶️ Recording started")
+      Log.i("ExpoLiveAudio", "▶️ Recording started with audioSource: $audioSource")
     } catch (e: Exception) {
       audioRecord?.release()
       audioRecord = null
+      releaseAudioEffects()
       throw e
     }
   }
@@ -155,6 +204,9 @@ class ExpoLiveAudioModule : Module() {
     // Cancel recording job
     recordingJob?.cancel()
     recordingJob = null
+    
+    // Release audio effects
+    releaseAudioEffects()
     
     // Stop and release AudioRecord
     try {
@@ -171,6 +223,47 @@ class ExpoLiveAudioModule : Module() {
     sendEvent("onStopped", bundleOf())
     
     Log.i("ExpoLiveAudio", "🛑 Recording stopped")
+  }
+  
+  // MARK: - Audio Effects (AGC, Noise Suppression)
+  
+  private fun setupAudioEffects(audioSessionId: Int) {
+    try {
+      // Setup Automatic Gain Control (AGC) - boosts quiet audio automatically
+      if (enableAGC && AutomaticGainControl.isAvailable()) {
+        automaticGainControl = AutomaticGainControl.create(audioSessionId)
+        automaticGainControl?.enabled = true
+        Log.i("ExpoLiveAudio", "🎚️ AGC enabled (auto-boosts audio volume)")
+      } else {
+        Log.w("ExpoLiveAudio", "⚠️ AGC not available or disabled")
+      }
+      
+      // Setup Noise Suppressor - reduces background noise
+      if (enableNoiseSuppression && NoiseSuppressor.isAvailable()) {
+        noiseSuppressor = NoiseSuppressor.create(audioSessionId)
+        noiseSuppressor?.enabled = true
+        Log.i("ExpoLiveAudio", "🔇 Noise suppression enabled")
+      } else {
+        Log.w("ExpoLiveAudio", "⚠️ Noise suppression not available or disabled")
+      }
+    } catch (e: Exception) {
+      Log.e("ExpoLiveAudio", "Failed to setup audio effects: ${e.message}", e)
+      // Continue without effects - not critical
+    }
+  }
+  
+  private fun releaseAudioEffects() {
+    try {
+      automaticGainControl?.release()
+      automaticGainControl = null
+      
+      noiseSuppressor?.release()
+      noiseSuppressor = null
+      
+      Log.i("ExpoLiveAudio", "🔧 Audio effects released")
+    } catch (e: Exception) {
+      Log.e("ExpoLiveAudio", "Error releasing audio effects: ${e.message}", e)
+    }
   }
   
   // MARK: - Audio Processing
