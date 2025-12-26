@@ -9,7 +9,7 @@ import {
   AudioQuality,
 } from 'expo-audio';
 import { readAsStringAsync } from 'expo-file-system/legacy';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,6 +18,8 @@ import {
   Pressable,
   StyleSheet,
   TextInput,
+  Animated,
+  Easing,
   View,
 } from 'react-native';
 
@@ -96,6 +98,8 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const pulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
 
   const mediaPicker = getMediaPicker();
 
@@ -305,6 +309,50 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     }
   }, [isSpeaking, isRecording, onStopSpeaking, startVoiceRecording, stopVoiceRecording]);
 
+  // Animate the mic button while recording to show the mic is live
+  useEffect(() => {
+    if (isRecording) {
+      pulseLoopRef.current?.stop();
+      pulseAnim.setValue(0);
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 650,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0,
+            duration: 650,
+            easing: Easing.in(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulseLoopRef.current = loop;
+      loop.start();
+    } else {
+      pulseLoopRef.current?.stop();
+      pulseLoopRef.current = null;
+      pulseAnim.setValue(0);
+    }
+
+    return () => {
+      pulseLoopRef.current?.stop();
+      pulseLoopRef.current = null;
+    };
+  }, [isRecording, pulseAnim]);
+
+  const pulseScale = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.35],
+  });
+  const pulseOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.4, 0],
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Camera Capture
   // Uses expo-image-picker which provides unified API for iOS and Android:
@@ -443,24 +491,39 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       <View style={styles.actionsRow}>
         <View style={styles.mediaButtons}>
           {/* Voice Button */}
-          <Pressable
-            style={[
-              styles.iconButton,
-              { backgroundColor: colors.backgroundSecondary },
-              isRecording && styles.recordingButton,
-              isSpeaking && styles.speakingButton,
-              isTranscribing && styles.transcribingButton,
-            ]}
-            onPress={handleVoicePress}
-            disabled={isLoading || isTranscribing || disabled}>
-            {isTranscribing ? (
-              <ActivityIndicator size="small" color="#ffffff" />
-            ) : isSpeaking ? (
-              <Ionicons name="stop" size={18} color="#ffffff" />
-            ) : (
-              <Ionicons name="mic" size={18} color={isRecording ? '#ffffff' : '#6b7280'} />
+          <View style={styles.voiceButtonContainer}>
+            {isRecording && (
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.voicePulse,
+                  {
+                    backgroundColor: colors.primary,
+                    opacity: pulseOpacity,
+                    transform: [{ scale: pulseScale }],
+                  },
+                ]}
+              />
             )}
-          </Pressable>
+            <Pressable
+              style={[
+                styles.iconButton,
+                { backgroundColor: colors.backgroundSecondary },
+                isRecording && styles.recordingButton,
+                isSpeaking && styles.speakingButton,
+                isTranscribing && styles.transcribingButton,
+              ]}
+              onPress={handleVoicePress}
+              disabled={isLoading || isTranscribing || disabled}>
+              {isTranscribing ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : isSpeaking ? (
+                <Ionicons name="stop" size={18} color="#ffffff" />
+              ) : (
+                <Ionicons name="mic" size={18} color={isRecording ? '#ffffff' : '#6b7280'} />
+              )}
+            </Pressable>
+          </View>
 
           {/* Gallery Button */}
           <Pressable
@@ -588,6 +651,18 @@ const styles = StyleSheet.create({
   mediaButtons: {
     flexDirection: 'row',
     gap: 8,
+  },
+  voiceButtonContainer: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voicePulse: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   iconButton: {
     width: 36,
