@@ -71,7 +71,7 @@ export default function JobDetailPage() {
     if (tab && ['transcription', 'askAI', 'checklist', 'insights'].includes(tab)) {
       return tab as TabKey;
     }
-    return 'transcription';
+    return 'askAI';
   });
   
   // Update activeTab when tab param changes (for navigation from notifications)
