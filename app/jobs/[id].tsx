@@ -686,6 +686,32 @@ export default function JobDetailPage() {
 
     if (!id) return;
 
+    // If not recording, use completeJob directly from useJobDetails
+    if (!isRecording) {
+      if (__DEV__) {
+        console.log('[JobDetail] ✅ Completing job (not recording)');
+      }
+      setActionLoading(true);
+      setIsCompletingJob(true);
+      try {
+        await completeJob(id);
+        // Refetch job to ensure we have the latest state after completion
+        await fetchJob(id);
+        invalidateJob();
+      } catch (err) {
+        // If completion fails, refetch to restore job state
+        console.error('[JobDetail] Error completing job:', err);
+        if (id) {
+          await fetchJob(id);
+        }
+      } finally {
+        setActionLoading(false);
+        setIsCompletingJob(false);
+      }
+      return;
+    }
+
+    // If recording, stop transcription first (server will complete job)
     if (__DEV__) {
       console.log('[JobDetail] ✅ Stopping recording - sending WebSocket end event (server will complete job)');
     }
@@ -781,7 +807,7 @@ export default function JobDetailPage() {
       setActionLoading(false);
       setIsCompletingJob(false);
     }
-  }, [id, stopTranscription, fetchJob, invalidateJob]);
+  }, [id, isRecording, completeJob, stopTranscription, fetchJob, invalidateJob, visitSession?.id, setApiTurns, jobStatusRef]);
 
   const handleResumeJob = useCallback(async () => {
     if (!id || !isAssignedToJob || !visitSession?.id || !job?.company_id) {
@@ -1085,6 +1111,19 @@ export default function JobDetailPage() {
   }
 
   if (!job) {
+    // Don't show "Job not found" if we're still loading or completing the job
+    if (loading || isCompletingJob || actionLoading) {
+      return (
+        <ThemedView style={styles.container}>
+          <SafeAreaView style={styles.loadingContainer} edges={['top', 'left', 'right']}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <ThemedText style={[styles.loadingText, { color: colors.textSecondary }]}>
+              {isCompletingJob ? 'Completing job...' : 'Loading job details...'}
+            </ThemedText>
+          </SafeAreaView>
+        </ThemedView>
+      );
+    }
     return (
       <ThemedView style={styles.container}>
         <SafeAreaView style={styles.errorContainer} edges={['top', 'left', 'right']}>
