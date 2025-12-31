@@ -69,6 +69,8 @@ interface MultiModalInputProps {
   onSendMessage: (content: string, type: 'text' | 'voice' | 'image') => void;
   onImageSelected?: (image: MediaAsset) => void;
   onVoiceRecorded?: (result: VoiceRecordingResult) => void;
+  onVoiceRecordingStart?: () => Promise<void>;
+  onVoiceRecordingEnd?: () => Promise<void>;
   isLoading: boolean;
   isSpeaking: boolean;
   isTranscribing?: boolean;
@@ -84,6 +86,8 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   onSendMessage,
   onImageSelected,
   onVoiceRecorded,
+  onVoiceRecordingStart,
+  onVoiceRecordingEnd,
   isLoading,
   isSpeaking,
   isTranscribing: isTranscribingProp = false,
@@ -171,6 +175,11 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   const startVoiceRecording = useCallback(async () => {
     try {
+      // Notify parent that recording is starting (to pause live transcription if needed)
+      if (onVoiceRecordingStart) {
+        await onVoiceRecordingStart();
+      }
+
       // Request microphone permissions
       const { granted } = await requestRecordingPermissionsAsync();
       if (!granted) {
@@ -183,13 +192,28 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       }
 
       // Set audio mode for recording - platform-aware configuration
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        shouldPlayInBackground: false,
-        // iOS-specific: route audio through speaker when not using headphones
-        ...(Platform.OS === 'ios' && { staysActiveInBackground: false }),
-      });
+      try {
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+          shouldPlayInBackground: false,
+          // iOS-specific: route audio through speaker when not using headphones
+          ...(Platform.OS === 'ios' && { staysActiveInBackground: false }),
+        });
+      } catch (audioModeError: any) {
+        console.warn('[MultiModalInput] Could not set audio mode:', audioModeError);
+        // Check if this is because another audio session is active
+        const errorMsg = audioModeError?.message || '';
+        if (errorMsg.includes('OSStatus') || errorMsg.includes('audio session')) {
+          Alert.alert(
+            'Audio In Use',
+            'The microphone is currently being used by another feature. Please stop the active recording first.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+        // Otherwise, try to continue anyway
+      }
 
       // Create recorder instance with OpenAI-compatible settings
       // iOS: Linear PCM (WAV) for maximum compatibility with OpenAI Whisper
@@ -217,10 +241,22 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         errorMessage.includes('not available') ||
         errorMessage.includes('emulator');
 
+      // Check for audio session conflicts
+      const isAudioSessionError = 
+        errorMessage.includes('OSStatus error 561017449') ||
+        errorMessage.includes('561017449') ||
+        errorMessage.includes('audio session');
+
       if (isSimulatorError) {
         Alert.alert(
           Platform.OS === 'ios' ? 'Simulator Limitation' : 'Emulator Limitation',
           `Voice recording may not work properly on ${Platform.OS === 'ios' ? 'simulators' : 'emulators'}. Please test on a real device for full functionality.`,
+          [{ text: 'OK' }]
+        );
+      } else if (isAudioSessionError) {
+        Alert.alert(
+          'Audio Session Conflict',
+          'The microphone is currently being used by another feature. Please stop the active recording first.',
           [{ text: 'OK' }]
         );
       } else {
@@ -228,13 +264,15 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       }
       setIsRecording(false);
     }
-  }, []);
+  }, [onVoiceRecordingStart]);
 
   const stopVoiceRecording = useCallback(async () => {
     if (!recorderRef.current) return;
 
     const startTime = recordingStartTimeRef.current;
     const recorder = recorderRef.current;
+    let uri: string | null = null;
+    let stopError: Error | null = null;
 
     try {
       setIsRecording(false);
@@ -243,17 +281,42 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         console.log('[MultiModalInput] Stopping voice recording...');
       }
 
-      await recorder.stop();
-      const status = recorder.getStatus();
-      const uri = status.url || recorder.uri;
+      // Try to stop the recorder and get the URI
+      try {
+        await recorder.stop();
+        const status = recorder.getStatus();
+        uri = status.url || recorder.uri;
+      } catch (error: any) {
+        // OSStatus error 561017449 = audio session conflict (e.g., another audio session is active)
+        // Save the error but continue to try to get the recording URI
+        stopError = error;
+        console.warn('[MultiModalInput] Error stopping recorder:', error?.message);
+        
+        // Try to get URI even if stop failed
+        try {
+          const status = recorder.getStatus();
+          uri = status.url || recorder.uri;
+        } catch (statusError) {
+          console.warn('[MultiModalInput] Could not get recorder status:', statusError);
+        }
+      }
+
+      // Clean up recorder reference
       recorderRef.current = null;
       recordingStartTimeRef.current = null;
 
-      // Reset audio mode
-      await setAudioModeAsync({
-        allowsRecording: false,
-      });
+      // Always try to reset audio mode, even if stop() failed
+      // Use a small delay to let the native audio session settle
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try {
+        await setAudioModeAsync({
+          allowsRecording: false,
+        });
+      } catch (audioModeError) {
+        console.warn('[MultiModalInput] Could not reset audio mode:', audioModeError);
+      }
 
+      // If we have a URI, process the recording
       if (uri) {
         const durationMs = startTime ? Date.now() - startTime : undefined;
         const mimeType = getAudioMimeTypeFromUri(uri);
@@ -263,6 +326,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           mimeType,
           fileExtension,
           platform: Platform.OS,
+          hadStopError: Boolean(stopError),
         });
         let base64Data: string | undefined;
 
@@ -320,7 +384,24 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           onSendMessage(base64Data ?? uri, 'voice');
         }
       } else {
-        Alert.alert('Recording Error', 'No audio file was created.');
+        // If we couldn't get a URI, show the original error or a generic message
+        if (stopError) {
+          const errorMsg = stopError.message || 'Unknown error';
+          // Check if this is an audio session conflict
+          if (errorMsg.includes('OSStatus error 561017449') || errorMsg.includes('561017449')) {
+            Alert.alert(
+              'Audio Session Conflict',
+              'The microphone is currently being used by another feature. Please try again or stop the active recording first.'
+            );
+          } else {
+            Alert.alert(
+              'Recording Error',
+              `Could not stop voice recording: ${errorMsg}`
+            );
+          }
+        } else {
+          Alert.alert('Recording Error', 'No audio file was created.');
+        }
       }
     } catch (error: any) {
       console.error('[MultiModalInput] Failed to stop recording:', error);
@@ -328,14 +409,25 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         'Recording Error',
         `Could not stop voice recording: ${error?.message || 'Unknown error'}`
       );
+    } finally {
+      // Always clean up state, even if everything failed
       setIsRecording(false);
       if (!isTranscribingProp) {
         setIsTranscribingLocal(false);
       }
       recorderRef.current = null;
       recordingStartTimeRef.current = null;
+
+      // Notify parent that recording ended (to resume live transcription if needed)
+      if (onVoiceRecordingEnd) {
+        try {
+          await onVoiceRecordingEnd();
+        } catch (err) {
+          console.warn('[MultiModalInput] Error in onVoiceRecordingEnd:', err);
+        }
+      }
     }
-  }, [onVoiceRecorded, onSendMessage]);
+  }, [onVoiceRecorded, onSendMessage, isTranscribingProp, onVoiceRecordingEnd]);
 
   const handleVoicePress = useCallback(() => {
     if (isSpeaking && onStopSpeaking) {

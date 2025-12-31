@@ -116,14 +116,18 @@ export const LoginForm: React.FC<Props> = ({
           leftIcon="mail-outline"
         />
 
-        <Input
-          label="Password"
-          value={password}
-          onChangeText={onPasswordChange}
-          placeholder="Enter your password"
-          credentialType="password"
-          leftIcon="lock-closed-outline"
-        />
+        {/* Password field - protect from capture (sensitive data) */}
+        <View {...({ 'ph-no-capture': true } as any)}>
+          <Input
+            label="Password"
+            value={password}
+            onChangeText={onPasswordChange}
+            placeholder="Enter your password"
+            credentialType="password"
+            leftIcon="lock-closed-outline"
+            phNoCapture={true}
+          />
+        </View>
 
         {/* Remember Me Checkbox */}
         {onRememberMeChange && (

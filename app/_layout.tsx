@@ -13,9 +13,38 @@ import { getNotificationService, initializeNotificationHandler } from '@/service
 import { getPermissionService } from '@/services/permissionService';
 import { useRecordingStore } from '@/store/useRecordingStore';
 
+// Import PostHog (enabled for testing, change to !__DEV__ for production only)
+let PostHogProvider: any = null;
+let usePostHogHook: any = null;
+try {
+  const posthog = require('posthog-react-native');
+  PostHogProvider = posthog.PostHogProvider;
+  usePostHogHook = posthog.usePostHog;
+} catch (error) {
+  // PostHog not available, continue without it
+}
+
 export const unstable_settings = {
   anchor: '(tabs)',
 };
+
+// Component to track screen views for expo-router (must be inside PostHogProvider)
+// As per PostHog docs: https://posthog.com/docs/libraries/react-native#with-expo-router
+function ScreenTracker() {
+  const segments = useSegments();
+  const posthog = usePostHogHook ? usePostHogHook() : null;
+
+  useEffect(() => {
+    if (!posthog || typeof posthog?.screen !== 'function') return;
+
+    // Track screen view when route changes (as per PostHog docs for expo-router)
+    const currentPath = segments.join('/') || '(tabs)';
+    const screenName = currentPath || 'Home';
+    posthog.screen(screenName);
+  }, [segments, posthog]);
+
+  return null;
+}
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
@@ -322,7 +351,8 @@ export default function RootLayout() {
     };
   }, [router, navigateToJobDetail]);
 
-  return (
+
+  const appContent = (
     <QueryProvider>
       <ThemeProvider>
         <NavigationThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
@@ -347,4 +377,37 @@ export default function RootLayout() {
       </ThemeProvider>
     </QueryProvider>
   );
+
+  // Wrap with PostHogProvider (enable for testing, change to !__DEV__ for production only)
+  if (PostHogProvider) {
+    const posthogApiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
+    const posthogHost = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
+    
+    if (posthogApiKey) {
+      return (
+        <PostHogProvider
+          apiKey={posthogApiKey}
+          options={{
+            host: posthogHost,
+            debug: __DEV__,
+            captureAppLifecycleEvents: true, // Enable Application Opened, Became Active, Backgrounded, Installed, Updated events
+          }}
+          autocapture={{
+            captureTouches: true,
+            captureScreens: false, // Disabled for expo-router - we track manually using usePostHog hook
+            ignoreLabels: [],
+            customLabelProp: 'ph-label',
+            maxElementsCaptured: 20,
+            noCaptureProp: 'ph-no-capture',
+            propsToCapture: ['testID'],
+          }}
+        >
+          <ScreenTracker />
+          {appContent}
+        </PostHogProvider>
+      );
+    }
+  }
+
+  return appContent;
 }

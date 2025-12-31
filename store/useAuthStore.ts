@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { resetPostHogIdentity } from '@/services/authService';
 
 export interface User {
   id?: string;
@@ -45,14 +46,18 @@ export const useAuthStore = create<AuthState>()(
           refresh_token: refreshToken,
           error: null,
         }),
-      logout: () =>
+      logout: () => {
+        // Reset PostHog identity on logout (covers both explicit logout and session expiration)
+        resetPostHogIdentity();
+        
         set({
           user: null,
           access_token: null,
           refresh_token: null,
           error: null,
           isLoading: false,
-        }),
+        });
+      },
       setAccessToken: (token) => set({ access_token: token }),
       setRefreshToken: (token) => set({ refresh_token: token }),
       clearError: () => set({ error: null }),

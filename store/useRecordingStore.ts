@@ -56,7 +56,9 @@ interface TranscriptionState {
     }
   ) => Promise<void>;
   stopTranscription: () => Promise<void>;
-  setApiTurns: (turns: DialogueTurn[]) => void;
+  pauseTranscription: () => Promise<void>;
+  resumeTranscription: () => Promise<void>;
+  setApiTurns: (turns: DialogueTurn[], visitSessionId?: string) => void;
   
   // Clear all state
   clearTranscriptionState: () => void;
@@ -139,6 +141,10 @@ export const useRecordingStore = create<TranscriptionState>((set, get) => {
         if (__DEV__) {
           console.log('[RecordingStore] Recording status:', recording);
         }
+      },
+      onAppBackground: () => {
+        // Suppress recording confirmation dialog when app is opened from notification
+        set({ shouldShowRecordingConfirmation: false });
       },
     });
 
@@ -361,17 +367,72 @@ export const useRecordingStore = create<TranscriptionState>((set, get) => {
       }
     },
     
+    // Pause transcription (keeps WebSocket alive)
+    pauseTranscription: async () => {
+      const state = get();
+      
+      if (!state._audioRecorder || !state.isRecording) {
+        if (__DEV__) {
+          console.warn('[RecordingStore] Cannot pause - not recording');
+        }
+        return;
+      }
+      
+      if (__DEV__) {
+        console.log('[RecordingStore] ⏸️ Pausing transcription...');
+      }
+      
+      try {
+        await state._audioRecorder.pause();
+        
+        if (__DEV__) {
+          console.log('[RecordingStore] ✅ Transcription paused (sending silence to keep connection alive)');
+        }
+      } catch (error) {
+        console.error('[RecordingStore] Failed to pause transcription:', error);
+      }
+    },
+    
+    // Resume transcription
+    resumeTranscription: async () => {
+      const state = get();
+      
+      if (!state._audioRecorder || !state.isRecording) {
+        if (__DEV__) {
+          console.warn('[RecordingStore] Cannot resume - not recording');
+        }
+        return;
+      }
+      
+      if (__DEV__) {
+        console.log('[RecordingStore] ▶️ Resuming transcription...');
+      }
+      
+      try {
+        await state._audioRecorder.resume();
+        
+        if (__DEV__) {
+          console.log('[RecordingStore] ✅ Transcription resumed');
+        }
+      } catch (error) {
+        console.error('[RecordingStore] Failed to resume transcription:', error);
+      }
+    },
+    
     // Set API turns - directly replace turns (no reconciliation)
-    setApiTurns: (newApiTurns) => {
+    // For completed jobs, can be called without active session ID
+    setApiTurns: (newApiTurns, visitSessionId?: string) => {
       const state = get();
       set({ _apiTurns: newApiTurns });
       
-      // Directly replace turns with API turns
-      if (state.activeTranscriptionSessionId) {
+      // Store turns using active session ID if available, otherwise use visit session ID
+      const sessionKey = state.activeTranscriptionSessionId || visitSessionId;
+      
+      if (sessionKey) {
         set({
           turnsBySessionId: {
             ...state.turnsBySessionId,
-            [state.activeTranscriptionSessionId]: newApiTurns,
+            [sessionKey]: newApiTurns,
           },
         });
       }
@@ -379,7 +440,8 @@ export const useRecordingStore = create<TranscriptionState>((set, get) => {
       if (__DEV__) {
         console.log('[RecordingStore] API turns set (replaced):', {
           count: newApiTurns.length,
-          sessionId: state.activeTranscriptionSessionId,
+          sessionId: sessionKey || 'none',
+          usingVisitSessionId: !state.activeTranscriptionSessionId && !!visitSessionId,
         });
       }
     },

@@ -139,8 +139,10 @@ export default function JobDetailPage() {
   const emptyTurnsRef = useRef<DialogueTurn[]>([]);
   const wsTurns = useRecordingStore((state) => {
     // Get turns for current session (reactive)
-    if (state.activeTranscriptionSessionId) {
-      const sessionTurns = state.turnsBySessionId[state.activeTranscriptionSessionId];
+    // First try active session ID, then fall back to visit session ID for completed jobs
+    const sessionKey = state.activeTranscriptionSessionId || visitSession?.id?.toString();
+    if (sessionKey) {
+      const sessionTurns = state.turnsBySessionId[sessionKey];
       // Return the actual array from store (or stable empty array reference)
       return sessionTurns || emptyTurnsRef.current;
     }
@@ -154,6 +156,8 @@ export default function JobDetailPage() {
   const activeJobId = useRecordingStore((state) => state.activeJobId);
   const startTranscription = useRecordingStore((state) => state.startTranscription);
   const stopTranscription = useRecordingStore((state) => state.stopTranscription);
+  const pauseTranscription = useRecordingStore((state) => state.pauseTranscription);
+  const resumeTranscription = useRecordingStore((state) => state.resumeTranscription);
   const setApiTurns = useRecordingStore((state) => state.setApiTurns);
 
   // Handle proactive suggestions callback
@@ -431,11 +435,12 @@ export default function JobDetailPage() {
         hasFetchedFreshTurnsRef.current = true;
         
         const freshTurns = await jobService.getTurnsByVisitSessionId(visitSession.id);
+        // Direct mapping from TranscriptionTurn to DialogueTurn
         const convertedTurns: DialogueTurn[] = freshTurns.map((turn) => ({
-          id: turn.id?.toString() || turn.provider_result_id,
+          id: String(turn.id || turn.provider_result_id),
           resultId: turn.provider_result_id,
-          turn_id: typeof turn.id === 'number' ? turn.id : parseInt(turn.id?.toString() || '0'),
-          speaker: (turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician')) as 'Technician' | 'Customer',
+          turn_id: typeof turn.id === 'number' ? turn.id : Number(turn.id) || 0,
+          speaker: (turn.speaker === 'technician' ? 'Technician' : 'Customer') as 'Technician' | 'Customer',
           text: turn.text,
           timestamp: new Date(turn.created_at),
           isPartial: false,
@@ -443,8 +448,8 @@ export default function JobDetailPage() {
           word_timestamps: turn.meta_data?.word_timestamps || [],
         }));
         
-        // Update store with fresh API turns (this replaces cached turns)
-        setApiTurns(convertedTurns);
+        // Update store with fresh API turns, pass visit session ID for completed jobs
+        setApiTurns(convertedTurns, visitSession.id);
         
         if (__DEV__) {
           console.log('[JobDetail] ✅ Updated store with fresh API turns after job completion:', convertedTurns.length);
@@ -734,11 +739,12 @@ export default function JobDetailPage() {
           }
           
           const freshTurns = await jobService.getTurnsByVisitSessionId(visitSession.id);
+          // Direct mapping from TranscriptionTurn to DialogueTurn
           const convertedTurns: DialogueTurn[] = freshTurns.map((turn) => ({
-            id: turn.id?.toString() || turn.provider_result_id,
+            id: String(turn.id || turn.provider_result_id),
             resultId: turn.provider_result_id,
-            turn_id: typeof turn.id === 'number' ? turn.id : parseInt(turn.id?.toString() || '0'),
-            speaker: (turn.speaker === 'technician' ? 'Technician' : (turn.speaker === 'customer' ? 'Customer' : 'Technician')) as 'Technician' | 'Customer',
+            turn_id: typeof turn.id === 'number' ? turn.id : Number(turn.id) || 0,
+            speaker: (turn.speaker === 'technician' ? 'Technician' : 'Customer') as 'Technician' | 'Customer',
             text: turn.text,
             timestamp: new Date(turn.created_at),
             isPartial: false,
@@ -746,8 +752,8 @@ export default function JobDetailPage() {
             word_timestamps: turn.meta_data?.word_timestamps || [],
           }));
           
-          // Update store with fresh API turns immediately
-          setApiTurns(convertedTurns);
+          // Update store with fresh API turns immediately, pass visit session ID for completed jobs
+          setApiTurns(convertedTurns, visitSession.id);
           
           if (__DEV__) {
             console.log('[JobDetail] ✅ Updated store with fresh turns immediately:', convertedTurns.length);
@@ -1058,6 +1064,8 @@ export default function JobDetailPage() {
       transcriptionError: effectiveError,
       startTranscription,
       stopTranscription,
+      pauseTranscription,
+      resumeTranscription,
       visitSessionId: visitSession?.id || job?.visit_sessions?.id,
       transcriptionScrollRef, // Add scroll ref for auto-scroll
       isLoadingDbTurns, // Add loading state for DB turns
@@ -1072,6 +1080,8 @@ export default function JobDetailPage() {
       effectiveIsConnecting,
       isRecording,
       effectiveError,
+      pauseTranscription,
+      resumeTranscription,
       startTranscription,
       stopTranscription,
       visitSession?.id,

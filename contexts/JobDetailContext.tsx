@@ -19,6 +19,8 @@ interface JobDetailContextValue {
   transcriptionError: string | null;
   startTranscription: (visitSessionId: string, companyId: number) => void;
   stopTranscription: () => void;
+  pauseTranscription: () => Promise<void>;
+  resumeTranscription: () => Promise<void>;
   visitSessionId?: string;
   transcriptionScrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>; // For auto-scroll
   isLoadingDbTurns?: boolean; // Loading state for DB turns

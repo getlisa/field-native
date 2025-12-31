@@ -41,6 +41,8 @@ interface InputProps extends TextInputProps {
   inputContainerStyle?: StyleProp<ViewStyle>;
   /** Credential type for autofill - sets appropriate autoComplete and textContentType */
   credentialType?: CredentialType;
+  /** PostHog: Prevent capture of sensitive data */
+  phNoCapture?: boolean;
 }
 
 /**
@@ -122,6 +124,7 @@ export const Input = forwardRef<TextInput, InputProps>(
       editable = true,
       secureTextEntry,
       credentialType,
+      phNoCapture,
       style,
       ...props
     },
@@ -183,8 +186,19 @@ export const Input = forwardRef<TextInput, InputProps>(
       props.onBlur?.(e);
     };
 
+    // Auto-disable capture for password fields
+    // PostHog React Native looks for the prop name defined in noCaptureProp config ('ph-no-capture')
+    const shouldNoCapture = phNoCapture || credentialType === 'password' || credentialType === 'newPassword';
+    
+    // Create props object for PostHog no-capture
+    // Using spread with computed property name for React Native compatibility
+    const noCaptureProps = shouldNoCapture ? { 'ph-no-capture': true } : {};
+
     return (
-      <View style={[styles.container, containerStyle]}>
+      <View 
+        style={[styles.container, containerStyle]}
+        {...(noCaptureProps as any)}
+      >
         {label && (
           <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
         )}
@@ -199,6 +213,7 @@ export const Input = forwardRef<TextInput, InputProps>(
             },
             inputContainerStyle,
           ]}
+          {...(noCaptureProps as any)}
         >
           {leftIcon && (
             <Ionicons

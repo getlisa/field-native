@@ -41,7 +41,7 @@ import type { Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
-  const { job, jobId, canUseAskAI } = useJobDetailContext();
+  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -527,6 +527,32 @@ export const AskAITab: React.FC = () => {
     stopTTS();
   }, [stopTTS]);
 
+  // Handle when Ask AI recording starts - pause live transcription
+  const handleVoiceRecordingStart = useCallback(async () => {
+    if (isLiveTranscribing || isTranscriptionConnected) {
+      if (__DEV__) {
+        console.log('[AskAI] Pausing live transcription for Ask AI recording...');
+      }
+      // Stop TTS first to avoid audio session conflicts
+      stopTTS();
+      // Small delay to let TTS cleanup
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await pauseTranscription();
+    }
+  }, [isLiveTranscribing, isTranscriptionConnected, pauseTranscription, stopTTS]);
+
+  // Handle when Ask AI recording ends - resume live transcription
+  const handleVoiceRecordingEnd = useCallback(async () => {
+    if (isLiveTranscribing || isTranscriptionConnected) {
+      if (__DEV__) {
+        console.log('[AskAI] Resuming live transcription after Ask AI recording...');
+      }
+      await resumeTranscription();
+      // Small delay after resume to let audio session stabilize before TTS can play again
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }, [isLiveTranscribing, isTranscriptionConnected, resumeTranscription]);
+
   // Handle voice recordings - transcribe and send
   // If there are pending images, automatically upload them with the transcribed text
   const handleVoiceRecorded = useCallback(
@@ -721,6 +747,8 @@ export const AskAITab: React.FC = () => {
           onSendMessage={handleSendMessage}
           onImageSelected={handleImageSelected}
           onVoiceRecorded={handleVoiceRecorded}
+          onVoiceRecordingStart={handleVoiceRecordingStart}
+          onVoiceRecordingEnd={handleVoiceRecordingEnd}
           isLoading={isLoading}
           isSpeaking={isSpeaking}
           isTranscribing={isTranscribing}

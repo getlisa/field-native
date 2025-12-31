@@ -10,9 +10,9 @@
  */
 
 import { AppState, type AppStateStatus, PermissionsAndroid, Platform } from 'react-native';
+import { Buffer } from 'buffer';
 import { createAudioProcessor, getNativeAudioConfig } from './processors';
 import type { AudioChunkData, AudioRecorderCallbacks, AudioRecorderConfig, IAudioProcessor } from './types';
-import { useRecordingStore } from '@/store/useRecordingStore';
 
 // Native modules (may be null in Expo Go)
 let BackgroundActions: any = null;
@@ -58,19 +58,25 @@ const createBackgroundTaskOptions = (jobId?: string) => {
   };
 };
 
-export interface AudioRecorderOptions extends AudioRecorderCallbacks, AudioRecorderConfig {}
+export interface AudioRecorderOptions extends AudioRecorderCallbacks, AudioRecorderConfig {
+  /** Optional callback when app goes to background */
+  onAppBackground?: () => void;
+}
 
 export class AudioRecorder {
   private readonly processor: IAudioProcessor;
   private readonly callbacks: AudioRecorderCallbacks;
   private readonly config: AudioRecorderConfig;
   private readonly jobId: string | undefined;
+  private readonly onAppBackground?: () => void;
 
   private isRecording = false;
+  private isPaused = false;
   private chunkCount = 0;
   private appStateSubscription: { remove: () => void } | null = null;
   private isBackgroundTaskRunning = false;
   private isListenerAttached = false;
+  private silenceInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: AudioRecorderOptions) {
     this.processor = createAudioProcessor();
@@ -84,6 +90,7 @@ export class AudioRecorder {
       debugRms: options.debugRms ?? true,
     };
     this.jobId = options.jobId;
+    this.onAppBackground = options.onAppBackground;
     
     if (__DEV__) {
       console.log('[Audio] AudioRecorder created with jobId:', this.jobId || 'undefined');
@@ -106,6 +113,13 @@ export class AudioRecorder {
    */
   getIsRecording(): boolean {
     return this.isRecording;
+  }
+
+  /**
+   * Check if currently paused
+   */
+  getIsPaused(): boolean {
+    return this.isPaused;
   }
 
   /**
@@ -241,6 +255,113 @@ export class AudioRecorder {
   }
 
   /**
+   * Pause audio streaming (keeps WebSocket alive with silence)
+   */
+  async pause(): Promise<void> {
+    if (!this.isRecording || this.isPaused) return;
+
+    if (__DEV__) {
+      console.log('[Audio] ⏸️ Pausing audio stream (will send silence to keep connection alive)');
+    }
+
+    this.isPaused = true;
+
+    // Stop the native audio stream
+    try {
+      if (LiveAudioStream) {
+        LiveAudioStream.stop();
+      }
+    } catch (error) {
+      console.warn('[Audio] Error pausing stream:', error);
+    }
+
+    this.detachDataListener();
+
+    // Send silence chunks every 100ms to keep WebSocket alive
+    this.silenceInterval = setInterval(() => {
+      if (this.isPaused && this.isRecording) {
+        // Create a silent audio chunk (all zeros)
+        // 100ms at 16kHz mono, 16-bit = 16000 * 0.1 * 2 bytes = 3200 bytes
+        const silentBuffer = new ArrayBuffer(3200);
+        const silentArray = new Uint8Array(silentBuffer);
+        silentArray.fill(0);
+        
+        // Convert to base64
+        const base64 = Buffer.from(silentBuffer).toString('base64');
+        
+        const silentChunk: AudioChunkData = {
+          base64,
+          buffer: silentBuffer,
+          byteSize: silentBuffer.byteLength,
+          rms: 0,
+        };
+        
+        this.callbacks.onAudioChunk(silentChunk);
+      }
+    }, 100);
+
+    if (__DEV__) {
+      console.log('[Audio] ✅ Audio stream paused, sending silence chunks');
+    }
+  }
+
+  /**
+   * Resume audio streaming
+   */
+  async resume(): Promise<void> {
+    if (!this.isRecording || !this.isPaused) return;
+
+    if (__DEV__) {
+      console.log('[Audio] ▶️ Resuming audio stream...');
+    }
+
+    // Stop sending silence chunks
+    if (this.silenceInterval) {
+      clearInterval(this.silenceInterval);
+      this.silenceInterval = null;
+    }
+
+    this.isPaused = false;
+
+    try {
+      // Reconfigure iOS audio session if needed (similar to start)
+      if (Platform.OS === 'ios' && LiveAudioStream?.configureAudioSession) {
+        try {
+          await LiveAudioStream.configureAudioSession({
+            category: 'PlayAndRecord',
+            mode: 'VoiceChat',
+            allowBluetooth: true,
+            allowBluetoothA2DP: true,
+          });
+          // Small delay to ensure audio session is fully configured
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (err) {
+          console.warn('[Audio] ⚠️ Failed to reconfigure iOS audio session on resume:', err);
+          // Continue anyway - native module will attempt to activate
+        }
+      }
+
+      // Restart the native audio stream
+      if (LiveAudioStream) {
+        const nativeConfig = getNativeAudioConfig(this.processor);
+        
+        // Re-initialize and start
+        LiveAudioStream.init(nativeConfig);
+        this.attachDataListener();
+        LiveAudioStream.start();
+
+        if (__DEV__) {
+          console.log('[Audio] ✅ Audio stream resumed');
+        }
+      }
+    } catch (error) {
+      console.error('[Audio] Failed to resume stream:', error);
+      this.isPaused = true; // Keep paused on error
+      this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
    * Stop audio streaming
    */
   async stop(): Promise<void> {
@@ -251,6 +372,13 @@ export class AudioRecorder {
     }
 
     this.isRecording = false;
+    this.isPaused = false;
+
+    // Stop silence interval if running
+    if (this.silenceInterval) {
+      clearInterval(this.silenceInterval);
+      this.silenceInterval = null;
+    }
 
     // Cleanup listeners
     if (this.appStateSubscription) {
@@ -278,7 +406,7 @@ export class AudioRecorder {
   // ─────────────────────────────────────────────────────────────────────────────
 
   private handleAudioData = (rawData: unknown): void => {
-    if (!this.isRecording) return;
+    if (!this.isRecording || this.isPaused) return;
 
     // Process the raw data using platform-specific processor
     const chunk = this.processor.processChunk(rawData);
@@ -347,8 +475,8 @@ export class AudioRecorder {
 
     if (nextAppState === 'background' && this.isRecording) {
       console.log('[Audio] 📱 App in background, audio continues via background service');
-      // Set flag to false to suppress recording confirmation dialog when app is opened from notification
-      useRecordingStore.getState().setShouldShowRecordingConfirmation(false);
+      // Call optional callback to suppress recording confirmation dialog
+      this.onAppBackground?.();
     }
   };
 

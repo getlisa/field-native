@@ -96,6 +96,7 @@ export default {
           cameraPermission: 'This app needs access to your camera to take photos during job visits.',
         },
       ],
+      'expo-localization',
     ],
     experiments: {
       typedRoutes: true,
