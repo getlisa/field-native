@@ -772,6 +772,7 @@ export const AskAITab: React.FC = () => {
         <MultiModalInput
           onSendMessage={handleSendMessage}
           onImageSelected={handleImageSelected}
+          useMetaImagePicker={true}
           onVoiceRecorded={handleVoiceRecorded}
           onVoiceRecordingStart={handleVoiceRecordingStart}
           onVoiceRecordingEnd={handleVoiceRecordingEnd}
