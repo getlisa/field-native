@@ -24,6 +24,14 @@ try {
   // PostHog not available, continue without it
 }
 
+// Import Meta Wearables SDK (optional)
+let ExpoMetaWearables: any = null;
+try {
+  ExpoMetaWearables = require('expo-meta-wearables').default;
+} catch (error) {
+  // expo-meta-wearables not available
+}
+
 export const unstable_settings = {
   anchor: '(tabs)',
 };
@@ -85,6 +93,37 @@ export default function RootLayout() {
     };
 
     initPermissions();
+  }, []);
+
+  // Initialize Meta Wearables SDK
+  useEffect(() => {
+    const initMetaWearables = async () => {
+      if (!ExpoMetaWearables) {
+        if (__DEV__) {
+          console.log('[RootLayout] expo-meta-wearables not available');
+        }
+        return;
+      }
+
+      try {
+        if (!ExpoMetaWearables.isInitialized()) {
+          await ExpoMetaWearables.initialize();
+          if (__DEV__) {
+            console.log('[RootLayout] Meta Wearables SDK initialized');
+          }
+        }
+
+        // Check for connected devices
+        const devices = ExpoMetaWearables.getDevices?.() || [];
+        if (__DEV__) {
+          console.log('[RootLayout] Meta Wearables devices:', devices.length);
+        }
+      } catch (error) {
+        console.warn('[RootLayout] Failed to initialize Meta Wearables:', error);
+      }
+    };
+
+    initMetaWearables();
   }, []);
 
   // Handle deep links (from background service notification or other sources)
