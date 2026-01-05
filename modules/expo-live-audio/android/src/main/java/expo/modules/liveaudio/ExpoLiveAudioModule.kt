@@ -1,10 +1,15 @@
 package expo.modules.liveaudio
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import expo.modules.kotlin.modules.Module
@@ -40,13 +45,19 @@ class ExpoLiveAudioModule : Module() {
   private var enableAGC = true
   private var enableNoiseSuppression = true
   
+  // Audio focus management
+  private var audioManager: AudioManager? = null
+  private var audioFocusRequest: AudioFocusRequest? = null
+  private var hasAudioFocus = false
+  private var isPausedByFocusLoss = false
+  
   // Scope for coroutines
   private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
   
   override fun definition() = ModuleDefinition {
     Name("ExpoLiveAudio")
     
-    Events("onAudioChunk", "onStarted", "onStopped", "onError")
+    Events("onAudioChunk", "onStarted", "onStopped", "onError", "onInterruptionBegan", "onInterruptionEnded")
     
     OnDestroy {
       cleanup()
@@ -138,6 +149,11 @@ class ExpoLiveAudioModule : Module() {
       throw IllegalStateException("Not initialized. Call init() first.")
     }
     
+    // Request audio focus before starting recording
+    if (!requestAudioFocus()) {
+      Log.w("ExpoLiveAudio", "⚠️ Starting recording without audio focus")
+    }
+    
     // Get minimum buffer size
     val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
     if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
@@ -218,6 +234,9 @@ class ExpoLiveAudioModule : Module() {
     
     audioRecord = null
     isRecording = false
+    
+    // Abandon audio focus
+    abandonAudioFocus()
     
     // Emit stopped event
     sendEvent("onStopped", bundleOf())
@@ -313,10 +332,126 @@ class ExpoLiveAudioModule : Module() {
     }
   }
   
+  // MARK: - Audio Focus Management
+  
+  private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+    when (focusChange) {
+      AudioManager.AUDIOFOCUS_LOSS -> {
+        // Permanent audio focus loss (phone call, another app taking over permanently)
+        Log.w("ExpoLiveAudio", "⚠️ Audio focus lost permanently - pausing recording")
+        if (isRecording && !isPausedByFocusLoss) {
+          isPausedByFocusLoss = true
+          hasAudioFocus = false
+          
+          // Notify JS layer to pause and send silence
+          sendEvent("onInterruptionBegan", bundleOf())
+        }
+      }
+      
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+        // Temporary audio focus loss (TTS, navigation, etc.) - will be restored
+        Log.w("ExpoLiveAudio", "⚠️ Audio focus lost temporarily - pausing recording")
+        if (isRecording && !isPausedByFocusLoss) {
+          isPausedByFocusLoss = true
+          // Keep hasAudioFocus = true so we know we still "own" the focus and will get it back
+          
+          // Notify JS layer to pause and send silence
+          sendEvent("onInterruptionBegan", bundleOf())
+        }
+      }
+      
+      AudioManager.AUDIOFOCUS_GAIN -> {
+        // Regained audio focus (after transient loss)
+        Log.i("ExpoLiveAudio", "✅ Audio focus gained/regained")
+        if (isPausedByFocusLoss) {
+          isPausedByFocusLoss = false
+          hasAudioFocus = true
+          
+          // Notify JS layer to resume
+          sendEvent("onInterruptionEnded", bundleOf("shouldResume" to true))
+          Log.d("ExpoLiveAudio", "📤 Sent onInterruptionEnded event to JS layer")
+        } else if (!hasAudioFocus) {
+          // We got audio focus but weren't paused - just update the flag
+          hasAudioFocus = true
+          Log.d("ExpoLiveAudio", "ℹ️ Audio focus gained (was not paused)")
+        }
+      }
+      
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+        // Can continue at lower volume (e.g., notification sound) - DON'T pause
+        Log.d("ExpoLiveAudio", "ℹ️ Audio focus loss transient (can duck) - continuing at lower volume")
+      }
+    }
+  }
+  
+  private fun requestAudioFocus(): Boolean {
+    try {
+      val context = appContext.reactContext ?: return false
+      audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+      
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val audioAttributes = AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+          .build()
+        
+        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+          .setAudioAttributes(audioAttributes)
+          .setOnAudioFocusChangeListener(audioFocusChangeListener)
+          .build()
+        
+        val result = audioManager?.requestAudioFocus(audioFocusRequest!!)
+        hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      } else {
+        @Suppress("DEPRECATION")
+        val result = audioManager?.requestAudioFocus(
+          audioFocusChangeListener,
+          AudioManager.STREAM_VOICE_CALL,
+          AudioManager.AUDIOFOCUS_GAIN
+        )
+        hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      }
+      
+      if (hasAudioFocus) {
+        Log.i("ExpoLiveAudio", "🎧 Audio focus granted")
+      } else {
+        Log.w("ExpoLiveAudio", "⚠️ Audio focus request failed")
+      }
+      
+      return hasAudioFocus
+    } catch (e: Exception) {
+      Log.e("ExpoLiveAudio", "Failed to request audio focus: ${e.message}", e)
+      return false
+    }
+  }
+  
+  private fun abandonAudioFocus() {
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        audioFocusRequest?.let { request ->
+          audioManager?.abandonAudioFocusRequest(request)
+        }
+      } else {
+        @Suppress("DEPRECATION")
+        audioManager?.abandonAudioFocus(audioFocusChangeListener)
+      }
+      
+      hasAudioFocus = false
+      isPausedByFocusLoss = false
+      audioFocusRequest = null
+      audioManager = null
+      
+      Log.i("ExpoLiveAudio", "🎧 Audio focus abandoned")
+    } catch (e: Exception) {
+      Log.e("ExpoLiveAudio", "Error abandoning audio focus: ${e.message}", e)
+    }
+  }
+  
   // MARK: - Cleanup
   
   private fun cleanup() {
     stopRecording()
+    abandonAudioFocus()
     isInitialized = false
     Log.i("ExpoLiveAudio", "🧹 Cleaned up")
   }

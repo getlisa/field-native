@@ -71,7 +71,7 @@ public class ExpoLiveAudioModule: Module {
     }
     
     // Define events
-    Events("onAudioChunk", "onStarted", "onStopped", "onError")
+    Events("onAudioChunk", "onStarted", "onStopped", "onError", "onInterruptionBegan", "onInterruptionEnded")
   }
   
   // MARK: - Audio Session Configuration
@@ -450,6 +450,9 @@ public class ExpoLiveAudioModule: Module {
       print("[ExpoLiveAudio] ⚠️ Audio interruption began")
       // Audio engine will be paused automatically by iOS
       
+      // Notify JS layer so it can pause AudioRecorder and send silence chunks
+      sendEvent("onInterruptionBegan", [:])
+      
     case .ended:
       // Interruption ended
       guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
@@ -458,19 +461,19 @@ public class ExpoLiveAudioModule: Module {
       let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
       
       if options.contains(.shouldResume) {
-        print("[ExpoLiveAudio] ✅ Audio interruption ended - resuming recording")
+        print("[ExpoLiveAudio] ✅ Audio interruption ended - notifying JS layer to resume")
         
-        // Try to resume recording
-        do {
-          try AVAudioSession.sharedInstance().setActive(true)
-          try audioEngine?.start()
-          print("[ExpoLiveAudio] ✅ Recording resumed after interruption")
-        } catch {
-          print("[ExpoLiveAudio] ❌ Failed to resume after interruption: \(error)")
-          sendEvent("onError", ["error": "Failed to resume after interruption: \(error.localizedDescription)"])
-        }
+        // DON'T restart the engine here - the tap was removed when paused
+        // Let the JS layer handle the full restart via resume() -> init() + start()
+        // which will properly re-install the tap
+        
+        // Just notify JS layer so it can resume AudioRecorder
+        sendEvent("onInterruptionEnded", ["shouldResume": true])
       } else {
         print("[ExpoLiveAudio] ℹ️ Audio interruption ended - not resuming")
+        
+        // Notify JS layer even if not resuming
+        sendEvent("onInterruptionEnded", ["shouldResume": false])
       }
       
     @unknown default:

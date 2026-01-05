@@ -24,6 +24,8 @@ type ExpoLiveAudioModuleEvents = {
   onStarted(event: {}): void;
   onStopped(event: {}): void;
   onError(event: ErrorEvent): void;
+  onInterruptionBegan(event: {}): void;
+  onInterruptionEnded(event: { shouldResume: boolean }): void;
 };
 
 // Declare the native module class with proper typing
@@ -178,6 +180,25 @@ const ExpoLiveAudio = {
     if (eventName === 'error') {
       const subscription = NativeExpoLiveAudio.addListener('onError', handler as any);
       activeSubscriptions.set(handler, subscription);
+      return subscription;
+    }
+
+    // Audio interruption events (iOS/Android)
+    if (eventName === 'onInterruptionBegan') {
+      const subscription = NativeExpoLiveAudio.addListener('onInterruptionBegan', handler as any);
+      activeSubscriptions.set(handler, subscription);
+      if (__DEV__) {
+        console.log('[ExpoLiveAudio] ✅ Added listener for "onInterruptionBegan" event');
+      }
+      return subscription;
+    }
+
+    if (eventName === 'onInterruptionEnded') {
+      const subscription = NativeExpoLiveAudio.addListener('onInterruptionEnded', handler as any);
+      activeSubscriptions.set(handler, subscription);
+      if (__DEV__) {
+        console.log('[ExpoLiveAudio] ✅ Added listener for "onInterruptionEnded" event');
+      }
       return subscription;
     }
 

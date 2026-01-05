@@ -108,6 +108,32 @@ export const AskAITab: React.FC = () => {
     };
   }, []);
 
+  // Pause/resume live transcription when TTS is speaking
+  // This is critical for iOS where audio session might not automatically trigger interruption events
+  useEffect(() => {
+    // Only manage if live transcription is active
+    if (!isLiveTranscribing && !isTranscriptionConnected) return;
+
+    if (isSpeaking) {
+      // TTS started speaking - pause live transcription
+      if (__DEV__) {
+        console.log('[AskAI] TTS started - pausing live transcription');
+      }
+      pauseTranscription();
+    } else {
+      // TTS stopped speaking - resume live transcription
+      // Small delay to ensure TTS audio session is fully released
+      const timer = setTimeout(() => {
+        if (__DEV__) {
+          console.log('[AskAI] TTS stopped - resuming live transcription');
+        }
+        resumeTranscription();
+      }, 200);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [isSpeaking, isLiveTranscribing, isTranscriptionConnected, pauseTranscription, resumeTranscription]);
+
   // Ensure conversation exists
   const ensureConversation = useCallback(async () => {
     if (conversationId) return conversationId;

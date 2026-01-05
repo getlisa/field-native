@@ -77,6 +77,12 @@ export class AudioRecorder {
   private isBackgroundTaskRunning = false;
   private isListenerAttached = false;
   private silenceInterval: ReturnType<typeof setInterval> | null = null;
+  private interruptionListenersAttached = false;
+  private audioStateCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private lastAudioChunkTime: number = Date.now();
+  private pausedByInterruption = false;
+  private interruptionStartedAt: number | null = null;
+  private interruptionResumeTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: AudioRecorderOptions) {
     this.processor = createAudioProcessor();
@@ -239,7 +245,11 @@ export class AudioRecorder {
 
       this.isRecording = true;
       this.chunkCount = 0;
+      this.lastAudioChunkTime = Date.now();
       this.callbacks.onStatusChange?.(true);
+
+      // Start audio health check (detects if audio stops flowing unexpectedly)
+      this.startAudioHealthCheck();
 
       if (__DEV__) {
         console.log('[Audio] ✅ Audio stream started');
@@ -265,6 +275,9 @@ export class AudioRecorder {
     }
 
     this.isPaused = true;
+
+    // Stop audio health check while paused
+    this.stopAudioHealthCheck();
 
     // Stop the native audio stream
     try {
@@ -309,7 +322,15 @@ export class AudioRecorder {
    * Resume audio streaming
    */
   async resume(): Promise<void> {
-    if (!this.isRecording || !this.isPaused) return;
+    if (!this.isRecording || !this.isPaused) {
+      if (__DEV__) {
+        console.log('[Audio] ⚠️ Resume called but conditions not met:', {
+          isRecording: this.isRecording,
+          isPaused: this.isPaused,
+        });
+      }
+      return;
+    }
 
     if (__DEV__) {
       console.log('[Audio] ▶️ Resuming audio stream...');
@@ -322,6 +343,9 @@ export class AudioRecorder {
     }
 
     this.isPaused = false;
+    this.pausedByInterruption = false;
+    this.interruptionStartedAt = null;
+    this.clearInterruptionRecovery();
 
     try {
       // Reconfigure iOS audio session if needed (similar to start)
@@ -350,12 +374,16 @@ export class AudioRecorder {
         this.attachDataListener();
         LiveAudioStream.start();
 
+        // Reset audio chunk tracking and restart health check
+        this.lastAudioChunkTime = Date.now();
+        this.startAudioHealthCheck();
+
         if (__DEV__) {
           console.log('[Audio] ✅ Audio stream resumed');
         }
       }
     } catch (error) {
-      console.error('[Audio] Failed to resume stream:', error);
+      console.error('[Audio] ❌ Failed to resume stream:', error);
       this.isPaused = true; // Keep paused on error
       this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
     }
@@ -373,6 +401,12 @@ export class AudioRecorder {
 
     this.isRecording = false;
     this.isPaused = false;
+    this.pausedByInterruption = false;
+    this.interruptionStartedAt = null;
+    this.clearInterruptionRecovery();
+
+    // Stop health check
+    this.stopAudioHealthCheck();
 
     // Stop silence interval if running
     if (this.silenceInterval) {
@@ -418,6 +452,9 @@ export class AudioRecorder {
       return;
     }
 
+    // Track when we receive real audio (for health check)
+    this.lastAudioChunkTime = Date.now();
+
     this.chunkCount++;
     this.logChunk(chunk);
     this.callbacks.onAudioChunk(chunk);
@@ -444,6 +481,9 @@ export class AudioRecorder {
 
     LiveAudioStream.on('data', this.handleAudioData);
     this.isListenerAttached = true;
+    
+    // Also attach interruption listeners
+    this.attachInterruptionListeners();
   }
 
   private detachDataListener(): void {
@@ -462,6 +502,99 @@ export class AudioRecorder {
     }
 
     this.isListenerAttached = false;
+    
+    // Also detach interruption listeners
+    this.detachInterruptionListeners();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: Audio Interruption Handling (iOS/Android)
+  // ─────────────────────────────────────────────────────────────────────────────
+  
+  private handleInterruptionBegan = (): void => {
+    if (__DEV__) {
+      console.log('[Audio] 🚨 Audio interruption began (phone call, etc.) - pausing...', {
+        isRecording: this.isRecording,
+        isPaused: this.isPaused,
+      });
+    }
+    
+    this.pausedByInterruption = true;
+    this.interruptionStartedAt = Date.now();
+    this.scheduleInterruptionRecovery();
+
+    // Pause recording to send silence chunks and keep WebSocket alive
+    this.pause().catch((error) => {
+      console.error('[Audio] ❌ Failed to pause on interruption:', error);
+    });
+  };
+  
+  private handleInterruptionEnded = (event: any): void => {
+    const shouldResume = event?.shouldResume ?? true;
+    
+    if (__DEV__) {
+      console.log('[Audio] ✅ Audio interruption ended', {
+        shouldResume,
+        isRecording: this.isRecording,
+        isPaused: this.isPaused,
+        willAttemptResume: shouldResume && this.isPaused,
+      });
+    }
+    
+    this.clearInterruptionRecovery();
+
+    if (shouldResume && this.isPaused) {
+      // Resume recording
+      this.resume().catch((error) => {
+        console.error('[Audio] ❌ Failed to resume after interruption:', error);
+      });
+    } else if (__DEV__) {
+      console.log('[Audio] ⏭️ Skipping resume:', {
+        reason: !shouldResume ? 'shouldResume=false' : 'not paused',
+      });
+    }
+  };
+  
+  private attachInterruptionListeners(): void {
+    if (!LiveAudioStream || this.interruptionListenersAttached) return;
+    
+    try {
+      LiveAudioStream.on('onInterruptionBegan', this.handleInterruptionBegan);
+      LiveAudioStream.on('onInterruptionEnded', this.handleInterruptionEnded);
+      this.interruptionListenersAttached = true;
+      
+      if (__DEV__) {
+        console.log('[Audio] 🎧 Interruption listeners attached');
+      }
+    } catch (e) {
+      if (__DEV__) {
+        console.warn('[Audio] Failed to attach interruption listeners:', e);
+      }
+    }
+  }
+  
+  private detachInterruptionListeners(): void {
+    if (!LiveAudioStream || !this.interruptionListenersAttached) return;
+    
+    try {
+      if (typeof LiveAudioStream.removeListener === 'function') {
+        LiveAudioStream.removeListener('onInterruptionBegan', this.handleInterruptionBegan);
+        LiveAudioStream.removeListener('onInterruptionEnded', this.handleInterruptionEnded);
+      } else if (typeof LiveAudioStream.off === 'function') {
+        LiveAudioStream.off('onInterruptionBegan', this.handleInterruptionBegan);
+        LiveAudioStream.off('onInterruptionEnded', this.handleInterruptionEnded);
+      }
+      
+      this.interruptionListenersAttached = false;
+      
+      if (__DEV__) {
+        console.log('[Audio] 🎧 Interruption listeners detached');
+      }
+    } catch (e) {
+      if (__DEV__) {
+        console.warn('[Audio] Failed to detach interruption listeners:', e);
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -477,6 +610,15 @@ export class AudioRecorder {
       console.log('[Audio] 📱 App in background, audio continues via background service');
       // Call optional callback to suppress recording confirmation dialog
       this.onAppBackground?.();
+    }
+
+    if (nextAppState === 'active' && this.isRecording && this.isPaused && this.pausedByInterruption) {
+      if (__DEV__) {
+        console.log('[Audio] 🔄 App became active while paused by interruption - attempting resume');
+      }
+      this.resume().catch((error) => {
+        console.error('[Audio] ❌ Failed to resume on app foreground:', error);
+      });
     }
   };
 
@@ -558,6 +700,129 @@ export class AudioRecorder {
       }, 1000);
     });
   };
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Private: Audio Health Check (detects stuck/stalled audio)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private startAudioHealthCheck(): void {
+    // Don't start if already running
+    if (this.audioStateCheckInterval) return;
+
+    if (__DEV__) {
+      console.log('[Audio] 🏥 Starting audio health check...');
+    }
+
+    // Check every 3 seconds if audio is flowing
+    this.audioStateCheckInterval = setInterval(() => {
+      // Skip check if paused (we're intentionally sending silence)
+      if (this.isPaused) return;
+
+      const timeSinceLastChunk = Date.now() - this.lastAudioChunkTime;
+      
+      // If no audio received for 5 seconds while supposedly recording, try to recover
+      if (timeSinceLastChunk > 5000 && this.isRecording && !this.isPaused) {
+        if (__DEV__) {
+          console.warn('[Audio] ⚠️ Audio health check failed - no audio for 5s, attempting recovery...', {
+            timeSinceLastChunk: Math.round(timeSinceLastChunk / 1000) + 's',
+            isRecording: this.isRecording,
+            isPaused: this.isPaused,
+            chunkCount: this.chunkCount,
+          });
+        }
+
+        // Attempt to recover by restarting the audio stream
+        this.recoverAudioStream();
+      }
+    }, 3000);
+  }
+
+  private stopAudioHealthCheck(): void {
+    if (this.audioStateCheckInterval) {
+      clearInterval(this.audioStateCheckInterval);
+      this.audioStateCheckInterval = null;
+      
+      if (__DEV__) {
+        console.log('[Audio] 🏥 Audio health check stopped');
+      }
+    }
+  }
+
+  private scheduleInterruptionRecovery(): void {
+    // If an interruption end event never arrives (e.g., missed call not answered),
+    // attempt a resume after a grace period.
+    const recoveryDelayMs = 8000;
+    this.clearInterruptionRecovery();
+    this.interruptionResumeTimeout = setTimeout(() => {
+      if (this.isRecording && this.isPaused && this.pausedByInterruption) {
+        if (__DEV__) {
+          console.warn('[Audio] ⏳ No interruption-ended event received, auto-resuming after timeout');
+        }
+        this.resume().catch((error) => {
+          console.error('[Audio] ❌ Auto-resume after interruption timeout failed:', error);
+        });
+      }
+    }, recoveryDelayMs);
+  }
+
+  private clearInterruptionRecovery(): void {
+    if (this.interruptionResumeTimeout) {
+      clearTimeout(this.interruptionResumeTimeout);
+      this.interruptionResumeTimeout = null;
+    }
+  }
+
+  private async recoverAudioStream(): Promise<void> {
+    if (__DEV__) {
+      console.log('[Audio] 🔧 Attempting to recover audio stream...');
+    }
+
+    try {
+      // Don't use pause/resume since those have guards
+      // Directly restart the stream
+      
+      // Stop current stream
+      this.detachDataListener();
+      if (LiveAudioStream) {
+        LiveAudioStream.stop();
+      }
+
+      // Wait a bit
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Reconfigure audio session if iOS
+      if (Platform.OS === 'ios' && LiveAudioStream?.configureAudioSession) {
+        try {
+          await LiveAudioStream.configureAudioSession({
+            category: 'PlayAndRecord',
+            mode: 'VoiceChat',
+            allowBluetooth: true,
+            allowBluetoothA2DP: true,
+          });
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (err) {
+          console.warn('[Audio] ⚠️ Failed to reconfigure audio session during recovery:', err);
+        }
+      }
+
+      // Restart stream
+      if (LiveAudioStream) {
+        const nativeConfig = getNativeAudioConfig(this.processor);
+        LiveAudioStream.init(nativeConfig);
+        this.attachDataListener();
+        LiveAudioStream.start();
+        
+        this.lastAudioChunkTime = Date.now();
+        
+        if (__DEV__) {
+          console.log('[Audio] ✅ Audio stream recovery complete');
+        }
+      }
+    } catch (error) {
+      console.error('[Audio] ❌ Failed to recover audio stream:', error);
+      this.callbacks.onError?.(error instanceof Error ? error : new Error('Failed to recover audio stream'));
+    }
+  }
 }
 
 export default AudioRecorder;
