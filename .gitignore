@@ -41,3 +41,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+# External modules (clone separately from GitHub)
+modules/expo-meta-wearables/
+modules/expo-meta-image-picker/
