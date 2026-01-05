@@ -1,10 +1,14 @@
 package expo.modules.liveaudio
 
+import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import expo.modules.kotlin.modules.Module
@@ -98,9 +102,10 @@ class ExpoLiveAudioModule : Module() {
       stopRecording()
     }
     
-    // Configure audio session (Android - configure audio source)
+    // Configure audio session (Android - configure audio source / routing)
     AsyncFunction("configureAudioSession") { config: Map<String, Any>, promise: Promise ->
       try {
+        Log.d("ExpoLiveAudio", "configureAudioSession called with config: $config")
         // On Android, we can update audio source preference
         val audioSourceString = config["audioSource"] as? String
         if (audioSourceString != null) {
@@ -116,7 +121,14 @@ class ExpoLiveAudioModule : Module() {
             }
             else -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
           }
-          Log.d("ExpoLiveAudio", "✅ Audio source configured: $audioSource")
+          Log.d("ExpoLiveAudio", "✅ Audio source configured: $audioSource (requested: $audioSourceString)")
+        }
+
+        // Optional: prefer routing to a Bluetooth HFP / communication device when available.
+        val preferBluetoothHFP = config["preferBluetoothHFP"] as? Boolean ?: false
+        Log.d("ExpoLiveAudio", "preferBluetoothHFP flag: $preferBluetoothHFP")
+        if (preferBluetoothHFP) {
+          routeAudioToBluetoothHfpIfAvailable()
         }
         
         promise.resolve(null)
@@ -319,5 +331,78 @@ class ExpoLiveAudioModule : Module() {
     stopRecording()
     isInitialized = false
     Log.i("ExpoLiveAudio", "🧹 Cleaned up")
+  }
+
+  // MARK: - Bluetooth routing (Android HFP / communication device)
+
+  private fun routeAudioToBluetoothHfpIfAvailable() {
+    val reactContext = appContext.reactContext
+    if (reactContext == null) {
+      Log.w("ExpoLiveAudio", "⚠️ Cannot route audio to Bluetooth HFP: reactContext is null")
+      return
+    }
+
+    val audioManager = reactContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    if (audioManager == null) {
+      Log.w("ExpoLiveAudio", "⚠️ Cannot route audio to Bluetooth HFP: AudioManager not available")
+      return
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      val devices = audioManager.availableCommunicationDevices
+      Log.i("ExpoLiveAudio", "Available communication devices: ${devices.map { it.type to it.productName }}")
+      if (devices.isEmpty()) {
+        Log.i("ExpoLiveAudio", "ℹ️ No communication devices available for Bluetooth routing")
+        return
+      }
+
+      // Prioritize BLE headset, then Bluetooth SCO / classic headset.
+      val preferredTypes = listOf(
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+      )
+
+      var selectedDevice: AudioDeviceInfo? = null
+      outer@ for (type in preferredTypes) {
+        for (device in devices) {
+          if (device.type == type) {
+            selectedDevice = device
+            break@outer
+          }
+        }
+      }
+
+      if (selectedDevice != null) {
+        // Use communication mode and route all call-style audio through the BT device.
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = false
+
+        val success = audioManager.setCommunicationDevice(selectedDevice)
+        if (success) {
+          Log.i(
+            "ExpoLiveAudio",
+            "🎧 Routed communication audio to Bluetooth device type=${selectedDevice.type}, name=${selectedDevice.productName}"
+          )
+          val activeDevice = audioManager.communicationDevice
+          Log.i(
+            "ExpoLiveAudio",
+            "✅ Active communication device after routing: type=${activeDevice?.type}, name=${activeDevice?.productName}"
+          )
+        } else {
+          Log.w(
+            "ExpoLiveAudio",
+            "⚠️ Failed to set communication device to Bluetooth device type=${selectedDevice.type}, name=${selectedDevice.productName}"
+          )
+        }
+      } else {
+        Log.i("ExpoLiveAudio", "ℹ️ No suitable Bluetooth communication device found for HFP routing")
+      }
+    } else {
+      Log.i(
+        "ExpoLiveAudio",
+        "ℹ️ Bluetooth communication routing via setCommunicationDevice not supported on API < 31"
+      )
+    }
   }
 }

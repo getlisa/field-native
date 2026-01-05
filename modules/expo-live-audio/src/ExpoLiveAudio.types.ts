@@ -17,6 +17,12 @@ export type AudioSessionConfig = {
   mode?: string;
   allowBluetooth?: boolean;
   allowBluetoothA2DP?: boolean;
+  /**
+   * Prefer Bluetooth HFP (headset mic) over built-in mic when available.
+   * Currently implemented on iOS; Android accepts this flag but routing
+   * is handled by the system audio stack.
+   */
+  preferBluetoothHFP?: boolean;
 };
 
 export type AudioChunkEventPayload = {

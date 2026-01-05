@@ -13,10 +13,11 @@ import { AppState, type AppStateStatus, PermissionsAndroid, Platform } from 'rea
 import { Buffer } from 'buffer';
 import { createAudioProcessor, getNativeAudioConfig } from './processors';
 import type { AudioChunkData, AudioRecorderCallbacks, AudioRecorderConfig, IAudioProcessor } from './types';
+import ExpoLiveAudio from '../../native/ExpoLiveAudio';
 
 // Native modules (may be null in Expo Go)
 let BackgroundActions: any = null;
-let LiveAudioStream: any = null;
+let LiveAudioStream: any = ExpoLiveAudio;
 
 try {
   BackgroundActions = require('react-native-background-actions').default;
@@ -24,16 +25,20 @@ try {
   console.warn('[Audio] react-native-background-actions not available (requires dev build)');
 }
 
-// Prefer native ExpoLiveAudio wrapper, fallback to original lib if needed
-try {
-  LiveAudioStream = require('@/native/ExpoLiveAudio').default;
-} catch {
-  try {
-    LiveAudioStream = require('react-native-live-audio-stream').default;
-  } catch {
-    console.warn('[Audio] react-native-live-audio-stream not available (requires dev build)');
-  }
-}
+
+// try {
+//   LiveAudioStream = require('@/native/ExpoLiveAudio').default;
+// } catch {
+//   try {
+//     LiveAudioStream = require('react-native-live-audio-stream').default;
+//   } catch {
+//     console.warn('[Audio] react-native-live-audio-stream not available (requires dev build)');
+//   }
+// }
+
+// Prefer native ExpoLiveAudio wrapper; this requires a dev/native build
+// with the expo-live-audio module installed. If this import fails, the
+// build will clearly surface the problem instead of silently falling back.
 
 // Helper function to create background task options with job ID
 const createBackgroundTaskOptions = (jobId?: string) => {
@@ -198,29 +203,53 @@ export class AudioRecorder {
         console.log('[Audio] → JobId:', this.jobId || 'undefined');
       }
 
-      // Configure iOS audio session for optimal transcription clarity
+      // Configure audio session for optimal transcription clarity
       // MUST be done BEFORE init() and start()
-      if (Platform.OS === 'ios' && LiveAudioStream.configureAudioSession) {
-        try {
-          await LiveAudioStream.configureAudioSession({
-            category: 'PlayAndRecord',
-            mode: 'VoiceChat', // Best for transcription - optimized for speech frequencies + aggressive noise gating
-            allowBluetooth: true,
-            allowBluetoothA2DP: true, // Ensures speaker doesn't cause echo
-          });
-          if (__DEV__) {
-            console.log('[Audio] ✅ iOS audio session configured (VoiceChat mode + Hardware Voice Processing)');
-            console.log('[Audio] 🎙️ Multi-mic array enabled for noise suppression and null steering');
+      if (LiveAudioStream.configureAudioSession) {
+        if (__DEV__) {
+          console.log('[Audio] Configuring audio session for platform:', Platform.OS);
+        }
+        if (Platform.OS === 'ios') {
+          try {
+            await LiveAudioStream.configureAudioSession({
+              category: 'PlayAndRecord',
+              mode: 'VoiceChat', // Best for transcription - optimized for speech frequencies + aggressive noise gating
+              allowBluetooth: true,
+              // Use HFP headset profile for two-way audio (mic + speaker),
+              // do not opt into A2DP which is output-only.
+              allowBluetoothA2DP: false,
+              preferBluetoothHFP: true,
+            });
+            if (__DEV__) {
+              console.log('[Audio] ✅ iOS audio session configured (VoiceChat mode + Hardware Voice Processing)');
+              console.log('[Audio] 🎙️ Multi-mic array enabled for noise suppression and null steering');
+            }
+            
+            // Small delay to ensure audio session is fully configured
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (err) {
+            // This error can happen if audio session is in use
+            console.error('[Audio] ❌ Failed to configure iOS audio session:', err);
+            // Try to continue anyway - the native module will attempt to activate
+            if (__DEV__) {
+              console.log('[Audio] ⚠️ Continuing without pre-configuration (native module will configure)');
+            }
           }
-          
-          // Small delay to ensure audio session is fully configured
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (err) {
-          // This error can happen if audio session is in use
-          console.error('[Audio] ❌ Failed to configure iOS audio session:', err);
-          // Try to continue anyway - the native module will attempt to activate
-          if (__DEV__) {
-            console.log('[Audio] ⚠️ Continuing without pre-configuration (native module will configure)');
+        } else if (Platform.OS === 'android') {
+          try {
+            await LiveAudioStream.configureAudioSession({
+              // Keep using voice-oriented source; Bluetooth routing is handled
+              // by the system audio stack.
+              audioSource: 'VOICE_COMMUNICATION',
+              preferBluetoothHFP: true,
+            });
+            if (__DEV__) {
+              console.log('[Audio] ✅ Android audio session configured (VOICE_COMMUNICATION, HFP preferred)');
+            }
+          } catch (err) {
+            if (__DEV__) {
+              console.warn('[Audio] ⚠️ Failed to configure Android audio session:', err);
+            }
           }
         }
       }
@@ -324,20 +353,37 @@ export class AudioRecorder {
     this.isPaused = false;
 
     try {
-      // Reconfigure iOS audio session if needed (similar to start)
-      if (Platform.OS === 'ios' && LiveAudioStream?.configureAudioSession) {
-        try {
-          await LiveAudioStream.configureAudioSession({
-            category: 'PlayAndRecord',
-            mode: 'VoiceChat',
-            allowBluetooth: true,
-            allowBluetoothA2DP: true,
-          });
-          // Small delay to ensure audio session is fully configured
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (err) {
-          console.warn('[Audio] ⚠️ Failed to reconfigure iOS audio session on resume:', err);
-          // Continue anyway - native module will attempt to activate
+      // Reconfigure audio session if needed (similar to start)
+      if (LiveAudioStream?.configureAudioSession) {
+        if (__DEV__) {
+          console.log('[Audio] Reconfiguring audio session for platform:', Platform.OS);
+        }
+        if (Platform.OS === 'ios') {
+          try {
+            await LiveAudioStream.configureAudioSession({
+              category: 'PlayAndRecord',
+              mode: 'VoiceChat',
+              allowBluetooth: true,
+              allowBluetoothA2DP: false,
+              preferBluetoothHFP: true,
+            });
+            // Small delay to ensure audio session is fully configured
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (err) {
+            console.warn('[Audio] ⚠️ Failed to reconfigure iOS audio session on resume:', err);
+            // Continue anyway - native module will attempt to activate
+          }
+        } else if (Platform.OS === 'android') {
+          try {
+            await LiveAudioStream.configureAudioSession({
+              audioSource: 'VOICE_COMMUNICATION',
+              preferBluetoothHFP: true,
+            });
+          } catch (err) {
+            if (__DEV__) {
+              console.warn('[Audio] ⚠️ Failed to reconfigure Android audio session on resume:', err);
+            }
+          }
         }
       }
 

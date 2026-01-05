@@ -133,32 +133,52 @@ public class ExpoLiveAudioModule: Module {
       print("[ExpoLiveAudio] ℹ️ Input gain not settable (using automatic AGC via Voice Processing)")
     }
     
-    // OPTIMIZE: Select the best microphone for voice chat (prefer bottom mic for speakerphone)
+    // OPTIMIZE: Select the best microphone for voice chat.
+    // Prefer Bluetooth HFP headset mic when requested, otherwise fall back to built-in mic.
     if let availableInputs = audioSession.availableInputs {
-      for input in availableInputs {
-        if input.portType == .builtInMic {
+      let preferBluetoothHFP = config["preferBluetoothHFP"] as? Bool ?? false
+      var didSetPreferredInput = false
+
+      // First, try to select a Bluetooth HFP input (two-way headset profile).
+      if preferBluetoothHFP {
+        if let bluetoothInput = availableInputs.first(where: { $0.portType == .bluetoothHFP }) {
           do {
-            try audioSession.setPreferredInput(input)
-            print("[ExpoLiveAudio] 🎤 Selected built-in microphone")
-            
-            // Try to select the bottom or front microphone data source (best for distant voice)
-            if let dataSources = input.dataSources {
-              for dataSource in dataSources {
-                if dataSource.orientation == .bottom || dataSource.orientation == .front {
-                  do {
-                    try input.setPreferredDataSource(dataSource)
-                    print("[ExpoLiveAudio] 🎤 Using \(dataSource.orientation == .bottom ? "bottom" : "front") microphone for better distant pickup")
-                    break
-                  } catch {
-                    print("[ExpoLiveAudio] ⚠️ Could not set preferred data source: \(error)")
+            try audioSession.setPreferredInput(bluetoothInput)
+            didSetPreferredInput = true
+            print("[ExpoLiveAudio] 🎧 Selected Bluetooth HFP input: \(bluetoothInput.portName)")
+          } catch {
+            print("[ExpoLiveAudio] ⚠️ Could not set preferred Bluetooth HFP input: \(error)")
+          }
+        }
+      }
+
+      // If no Bluetooth HFP input was selected, fall back to built-in mic.
+      if !didSetPreferredInput {
+        for input in availableInputs {
+          if input.portType == .builtInMic {
+            do {
+              try audioSession.setPreferredInput(input)
+              print("[ExpoLiveAudio] 🎤 Selected built-in microphone")
+              
+              // Try to select the bottom or front microphone data source (best for distant voice)
+              if let dataSources = input.dataSources {
+                for dataSource in dataSources {
+                  if dataSource.orientation == .bottom || dataSource.orientation == .front {
+                    do {
+                      try input.setPreferredDataSource(dataSource)
+                      print("[ExpoLiveAudio] 🎤 Using \(dataSource.orientation == .bottom ? "bottom" : "front") microphone for better distant pickup")
+                      break
+                    } catch {
+                      print("[ExpoLiveAudio] ⚠️ Could not set preferred data source: \(error)")
+                    }
                   }
                 }
               }
+            } catch {
+              print("[ExpoLiveAudio] ⚠️ Could not set preferred input: \(error)")
             }
-          } catch {
-            print("[ExpoLiveAudio] ⚠️ Could not set preferred input: \(error)")
+            break
           }
-          break
         }
       }
     }
@@ -516,4 +536,3 @@ public class ExpoLiveAudioModule: Module {
     print("[ExpoLiveAudio] 🧹 Cleaned up")
   }
 }
-
