@@ -3,6 +3,7 @@
  */
 
 export type {
+  ImageSource,
   MediaAsset,
   ImagePickerResult,
   ImagePickerOptions,

@@ -97,6 +97,15 @@ export default {
         },
       ],
       'expo-localization',
+      // Meta Wearables plugin - configure with your Meta Developer credentials
+      [
+        'expo-meta-wearables',
+        {
+          metaAppId: process.env.META_APP_ID || 'YOUR_META_APP_ID',
+          clientToken: process.env.META_CLIENT_TOKEN || 'YOUR_META_CLIENT_TOKEN',
+          appLinkScheme: 'field',
+        },
+      ],
     ],
     experiments: {
       typedRoutes: true,
