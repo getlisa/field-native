@@ -542,6 +542,12 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       return;
     }
 
+    // If Meta image picker is enabled and available, show source selector
+    if (useMetaImagePicker && metaPickerHook) {
+      metaPickerHook.showSourceSelector();
+      return;
+    }
+
     if (!mediaPicker.isAvailable()) {
       Alert.alert(
         'Camera Unavailable',
@@ -573,7 +579,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       console.error('[MultiModalInput] Camera error:', error);
       Alert.alert('Camera Error', 'Failed to capture image. Please try again.');
     }
-  }, [mediaPicker, onImageSelected, pendingImages]);
+  }, [mediaPicker, onImageSelected, pendingImages, useMetaImagePicker, metaPickerHook]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Gallery Pick
