@@ -24,7 +24,20 @@ import {
 } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { getMediaPicker, type MediaAsset } from '@/lib/media';
+import { getMediaPicker, type MediaAsset, type ImageSource } from '@/lib/media';
+
+// New image picker with Meta glasses support (optional)
+let useImagePickerHook: any = null;
+let ImageSourceSelectorComponent: any = null;
+let MetaGlassesCaptureComponent: any = null;
+try {
+  const metaImagePicker = require('expo-meta-image-picker');
+  useImagePickerHook = metaImagePicker.useImagePicker;
+  ImageSourceSelectorComponent = metaImagePicker.ImageSourceSelector;
+  MetaGlassesCaptureComponent = metaImagePicker.MetaGlassesCapture;
+} catch {
+  // expo-meta-image-picker not available
+}
 import { useTheme } from '@/contexts/ThemeContext';
 
 // Custom recording options optimized for OpenAI Whisper API compatibility
@@ -68,6 +81,8 @@ export interface VoiceRecordingResult {
 interface MultiModalInputProps {
   onSendMessage: (content: string, type: 'text' | 'voice' | 'image') => void;
   onImageSelected?: (image: MediaAsset) => void;
+  /** Use new image picker with Meta glasses support (default: false) */
+  useMetaImagePicker?: boolean;
   onVoiceRecorded?: (result: VoiceRecordingResult) => void;
   onVoiceRecordingStart?: () => Promise<void>;
   onVoiceRecordingEnd?: () => Promise<void>;
@@ -85,6 +100,7 @@ interface MultiModalInputProps {
 export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   onSendMessage,
   onImageSelected,
+  useMetaImagePicker = false,
   onVoiceRecorded,
   onVoiceRecordingStart,
   onVoiceRecordingEnd,
@@ -135,6 +151,30 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   }, [isSpeaking, glowAnim]);
 
   const mediaPicker = getMediaPicker();
+
+  // Meta image picker hook (when enabled and available)
+  const metaPickerHook = useMetaImagePicker && useImagePickerHook ? useImagePickerHook() : null;
+  const hasMetaGlasses = metaPickerHook?.isMetaGlassesAvailable ?? mediaPicker.isMetaGlassesAvailable?.() ?? false;
+
+  // Handle source selection from ImageSourceSelector
+  const handleSourceSelect = useCallback((source: ImageSource) => {
+    if (!metaPickerHook) return;
+    metaPickerHook.selectSource(source);
+  }, [metaPickerHook]);
+
+  // Handle Meta glasses capture
+  const handleMetaCapture = useCallback((asset: any) => {
+    onImageSelected?.({
+      uri: asset.uri,
+      type: asset.type || 'image/jpeg',
+      name: 'meta-' + Date.now() + '.jpg',
+      size: asset.fileSize,
+      width: asset.width,
+      height: asset.height,
+      source: 'metaGlasses',
+      base64: asset.base64,
+    });
+  }, [onImageSelected]);
 
   const hasPendingImages = pendingImages.length > 0;
   const hasText = textInput.trim().length > 0;
@@ -712,6 +752,27 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           </ThemedText>
         </Pressable>
       </View>
+
+      {/* Image Source Selector Modal */}
+      {useMetaImagePicker && metaPickerHook && ImageSourceSelectorComponent && (
+        <ImageSourceSelectorComponent
+          visible={metaPickerHook.isSourceSelectorVisible}
+          sources={metaPickerHook.availableSources}
+          onSelect={handleSourceSelect}
+          onCancel={metaPickerHook.hideSourceSelector}
+          title="Choose Image Source"
+        />
+      )}
+
+      {/* Meta Glasses Capture Modal */}
+      {useMetaImagePicker && metaPickerHook && MetaGlassesCaptureComponent && (
+        <MetaGlassesCaptureComponent
+          visible={metaPickerHook.isMetaGlassesCaptureVisible}
+          onCapture={handleMetaCapture}
+          onCancel={metaPickerHook.hideMetaGlassesCapture}
+          quality={0.8}
+        />
+      )}
 
       {/* Transcription Status */}
       {/* {isTranscribing && (
