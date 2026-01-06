@@ -4,11 +4,24 @@
  * that conflict with standalone fbjni, fbcore, and proguard-annotations.
  *
  * Creates a local Maven repository with the patched AAR.
+ *
+ * This script is idempotent - it will skip processing if the patched AAR
+ * already exists. Use --force to regenerate.
+ *
+ * Usage:
+ *   node repackage-mwdat.js          # Normal run (skips if exists)
+ *   node repackage-mwdat.js --force  # Force regeneration
+ *   node repackage-mwdat.js --check  # Check if patching is needed (exit code 0=done, 1=needed)
  */
 
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+
+// Parse command line arguments
+const args = process.argv.slice(2);
+const forceRegenerate = args.includes('--force');
+const checkOnly = args.includes('--check');
 
 // Configuration
 const CONFIG = {
@@ -85,8 +98,42 @@ async function findOriginalAar() {
   throw new Error(`AAR file not found in ${basePath}`);
 }
 
+function getPatchedAarPath() {
+  return path.join(
+    OUTPUT_DIR,
+    ...CONFIG.groupId.split('.'),
+    CONFIG.artifactId,
+    CONFIG.version,
+    `${CONFIG.artifactId}-${CONFIG.version}.aar`
+  );
+}
+
+function isPatchedAarExists() {
+  const aarPath = getPatchedAarPath();
+  const pomPath = aarPath.replace('.aar', '.pom');
+  return fs.existsSync(aarPath) && fs.existsSync(pomPath);
+}
+
 async function main() {
   console.log('=== Repackaging mwdat-core AAR ===\n');
+
+  // Check if already patched
+  if (isPatchedAarExists()) {
+    if (checkOnly) {
+      console.log('Patched AAR already exists.');
+      process.exit(0);
+    }
+    if (!forceRegenerate) {
+      console.log('Patched AAR already exists at:');
+      console.log(`  ${getPatchedAarPath()}`);
+      console.log('\nSkipping repackaging. Use --force to regenerate.');
+      return;
+    }
+    console.log('Force regeneration requested.\n');
+  } else if (checkOnly) {
+    console.log('Patched AAR does not exist. Patching is needed.');
+    process.exit(1);
+  }
 
   // Ensure adm-zip is available
   let AdmZip;
@@ -99,8 +146,20 @@ async function main() {
   }
 
   // Find original AAR
-  const originalAar = await findOriginalAar();
-  console.log(`Found original AAR: ${originalAar}`);
+  let originalAar;
+  try {
+    originalAar = await findOriginalAar();
+    console.log(`Found original AAR: ${originalAar}`);
+  } catch (e) {
+    console.error('\nError: Could not find mwdat-core AAR in Gradle cache.');
+    console.error('This usually means Gradle has not downloaded the Meta SDK yet.\n');
+    console.error('To fix this, run:');
+    console.error('  cd android && ./gradlew :app:dependencies\n');
+    console.error('Or run a full build:');
+    console.error('  npx expo run:android\n');
+    console.error('Then run this script again.');
+    process.exit(1);
+  }
 
   // Create output directory
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });

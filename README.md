@@ -1,50 +1,118 @@
-# Welcome to your Expo app 👋
+# Field - Clara AI Companion
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A React Native/Expo app with Meta Wearables (Ray-Ban Meta glasses) integration.
 
-## Get started
+## Prerequisites
 
-1. Install dependencies
+- Node.js 18+
+- GitHub Personal Access Token with `read:packages` scope (for Meta SDK)
+- Android Studio (for Android development)
+- Xcode (for iOS development, macOS only)
 
-   ```bash
-   npm install
-   ```
+## Get Started
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+### 1. Install dependencies
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 2. Set up GitHub Token (Required for Meta SDK)
 
-## Learn more
+The Meta Wearables SDK is hosted on GitHub Packages. You need a token to download it.
 
-To learn more about developing your project with Expo, look at the following resources:
+**Create a token:** https://github.com/settings/tokens/new?scopes=read:packages
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+# Option A: Environment variable (recommended for development)
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-## Join the community
+# Option B: Add to ~/.gradle/gradle.properties (persists across sessions)
+echo "github_token=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >> ~/.gradle/gradle.properties
+```
 
-Join our community of developers creating universal apps.
+### 3. Build and Run
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+**Android:**
+```bash
+# Full prebuild with automatic SDK patching
+npm run prebuild:android
+
+# Then run the app
+npx expo run:android
+```
+
+**iOS:**
+```bash
+npx expo run:ios
+```
+
+### 4. Start development server
+
+```bash
+npx expo start
+```
+
+## Meta Wearables SDK Integration
+
+This app integrates with Meta's Wearables DAT SDK for Ray-Ban Meta glasses support.
+
+### How It Works
+
+The Meta SDK (`mwdat-core`) bundles Facebook libraries that conflict with React Native. We solve this by:
+
+1. **Patched AAR**: A custom script strips conflicting classes from the SDK
+2. **Local Maven Repository**: The patched AAR is stored in `android/patched-libs/`
+3. **Automatic Substitution**: Gradle automatically uses the patched version
+
+### NPM Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run patch-mwdat` | Patch Meta SDK AAR (idempotent) |
+| `npm run patch-mwdat:force` | Force regenerate patched AAR |
+| `npm run prebuild:android` | Expo prebuild + auto-patch |
+
+### For New Developers
+
+The patched AAR is already committed to the repo. Just run:
+
+```bash
+npm install
+npx expo run:android
+```
+
+### Regenerating the Patched AAR
+
+If you need to update or regenerate:
+
+```bash
+# Force regeneration
+npm run patch-mwdat:force
+```
+
+See [`android/scripts/README.md`](./android/scripts/README.md) for detailed documentation.
+
+## Custom Expo Modules
+
+Located in `modules/`:
+
+| Module | Description |
+|--------|-------------|
+| `expo-meta-wearables` | Meta Wearables SDK bridge |
+| `expo-meta-image-picker` | Image picker with Meta glasses support |
+| `expo-live-audio` | Live audio streaming |
+| `expo-pcm-audio-player` | PCM audio playback |
+
+## EAS Build (Cloud)
+
+For EAS builds, add your GitHub token as a secret:
+
+```bash
+eas secret:create --name GITHUB_TOKEN --value ghp_xxxxxxxxxxxx --scope project
+```
+
+## Learn More
+
+- [Expo documentation](https://docs.expo.dev/)
+- [Meta Wearables DAT SDK](https://github.com/facebook/meta-wearables-dat-android)

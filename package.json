@@ -13,7 +13,10 @@
     "sync-env:production": "node scripts/sync-env-to-eas.js --profile production",
     "build:preview:android": "eas build --profile preview --platform android",
     "build:preview:ios": "eas build --profile preview --platform ios",
-    "build:preview:all": "eas build --profile preview --platform all"
+    "build:preview:all": "eas build --profile preview --platform all",
+    "patch-mwdat": "node android/scripts/repackage-mwdat.js",
+    "patch-mwdat:force": "node android/scripts/repackage-mwdat.js --force",
+    "prebuild:android": "npx expo prebuild --platform android && npm run patch-mwdat"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
