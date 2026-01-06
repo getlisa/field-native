@@ -40,7 +40,10 @@ app-example
 
 # generated native folders
 /ios
-/android
+# Android - ignore all except custom scripts and patched libs
+/android/*
+!/android/scripts/
+!/android/patched-libs/
 
 # External modules (clone separately from GitHub)
 modules/expo-meta-wearables/
