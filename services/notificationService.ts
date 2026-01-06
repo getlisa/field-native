@@ -1,15 +1,33 @@
 /**
  * notificationService.ts - Push notification service for iOS and Android
- * 
+ *
  * Provides a clean abstraction for sending local notifications with support for
  * both iOS and Android platforms.
- * 
+ *
  * Uses expo-notifications for cross-platform notification support.
+ * Note: expo-notifications is imported dynamically to avoid crashes when native module isn't available.
  */
 
 import { Platform } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import { type ProactiveSuggestionsMessage, type MissedOpportunity } from '@/lib/RealtimeChat';
+
+// Lazy-load expo-notifications to avoid crashes when native module isn't available
+let Notifications: typeof import('expo-notifications') | null = null;
+let notificationsLoadError: Error | null = null;
+
+const getNotifications = async () => {
+  if (Notifications) return Notifications;
+  if (notificationsLoadError) throw notificationsLoadError;
+
+  try {
+    Notifications = await import('expo-notifications');
+    return Notifications;
+  } catch (error) {
+    notificationsLoadError = error as Error;
+    console.warn('[NotificationService] expo-notifications not available:', error);
+    throw error;
+  }
+};
 
 // Initialize notification handler flag
 let notificationHandlerInitialized = false;
@@ -18,11 +36,12 @@ let notificationHandlerInitialized = false;
  * Initialize notification handler (call this early in app lifecycle)
  * Safe to call multiple times - only initializes once
  */
-export function initializeNotificationHandler(): void {
+export async function initializeNotificationHandler(): Promise<void> {
   if (notificationHandlerInitialized) return;
-  
+
   try {
-    Notifications.setNotificationHandler({
+    const notifications = await getNotifications();
+    notifications.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowBanner: true,  // Show notification banner at top of screen
         shouldShowList: true,    // Show notification in notification list
@@ -32,7 +51,7 @@ export function initializeNotificationHandler(): void {
     });
     notificationHandlerInitialized = true;
   } catch (error) {
-    console.error('[NotificationService] Error initializing notification handler:', error);
+    console.warn('[NotificationService] Notification handler not available:', error);
   }
 }
 
@@ -118,18 +137,19 @@ class NotificationService implements INotificationService {
    */
   async requestPermissions(): Promise<boolean> {
     try {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      const notifications = await getNotifications();
+      const { status: existingStatus } = await notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
 
       if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
+        const { status } = await notifications.requestPermissionsAsync();
         finalStatus = status;
       }
 
       this.permissionsGranted = finalStatus === 'granted';
       return this.permissionsGranted;
     } catch (error) {
-      console.error('[NotificationService] Error requesting permissions:', error);
+      console.warn('[NotificationService] Notifications not available:', error);
       this.permissionsGranted = false;
       return false;
     }
@@ -144,11 +164,12 @@ class NotificationService implements INotificationService {
     }
 
     try {
-      const { status } = await Notifications.getPermissionsAsync();
+      const notifications = await getNotifications();
+      const { status } = await notifications.getPermissionsAsync();
       this.permissionsGranted = status === 'granted';
       return this.permissionsGranted;
     } catch (error) {
-      console.error('[NotificationService] Error checking permissions:', error);
+      console.warn('[NotificationService] Notifications not available:', error);
       return false;
     }
   }
@@ -158,6 +179,8 @@ class NotificationService implements INotificationService {
    */
   async sendNotification(config: NotificationConfig): Promise<string> {
     try {
+      const notifications = await getNotifications();
+
       // Ensure permissions are granted
       const hasPermission = await this.areNotificationsEnabled();
       if (!hasPermission) {
@@ -168,7 +191,7 @@ class NotificationService implements INotificationService {
       }
 
       // Configure notification content
-      const content: Notifications.NotificationContentInput = {
+      const content = {
         title: config.title,
         body: config.body,
         data: config.data || {},
@@ -176,17 +199,14 @@ class NotificationService implements INotificationService {
         priority: config.priority || 'high',
       };
 
-      // Configure trigger (immediate)
-      const trigger: Notifications.NotificationTriggerInput = null; // null = immediate
-
-      // Schedule notification
-      const notificationId = await Notifications.scheduleNotificationAsync({
+      // Schedule notification (null trigger = immediate)
+      const notificationId = await notifications.scheduleNotificationAsync({
         content,
-        trigger,
+        trigger: null,
       });
 
       if (__DEV__) {
-        console.log('[NotificationService] ✅ Notification sent:', notificationId);
+        console.log('[NotificationService] Notification sent:', notificationId);
       }
 
       return notificationId;
@@ -239,12 +259,13 @@ class NotificationService implements INotificationService {
    */
   async cancelNotification(notificationId: string): Promise<void> {
     try {
-      await Notifications.cancelScheduledNotificationAsync(notificationId);
+      const notifications = await getNotifications();
+      await notifications.cancelScheduledNotificationAsync(notificationId);
       if (__DEV__) {
-        console.log('[NotificationService] ✅ Notification cancelled:', notificationId);
+        console.log('[NotificationService] Notification cancelled:', notificationId);
       }
     } catch (error) {
-      console.error('[NotificationService] Error cancelling notification:', error);
+      console.warn('[NotificationService] Error cancelling notification:', error);
     }
   }
 
@@ -253,12 +274,13 @@ class NotificationService implements INotificationService {
    */
   async cancelAllNotifications(): Promise<void> {
     try {
-      await Notifications.cancelAllScheduledNotificationsAsync();
+      const notifications = await getNotifications();
+      await notifications.cancelAllScheduledNotificationsAsync();
       if (__DEV__) {
-        console.log('[NotificationService] ✅ All notifications cancelled');
+        console.log('[NotificationService] All notifications cancelled');
       }
     } catch (error) {
-      console.error('[NotificationService] Error cancelling all notifications:', error);
+      console.warn('[NotificationService] Error cancelling all notifications:', error);
     }
   }
 
@@ -289,28 +311,23 @@ class NotificationService implements INotificationService {
    */
   async cancelRecordingNotification(jobId: string): Promise<void> {
     try {
+      const notifications = await getNotifications();
       // Get all scheduled notifications
-      const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
-      
+      const scheduledNotifications = await notifications.getAllScheduledNotificationsAsync();
+
       // Find and cancel scheduled recording notifications for this job
       for (const notification of scheduledNotifications) {
         const data = notification.content.data;
         if (data?.type === 'recording' && data?.jobId === jobId) {
-          await Notifications.cancelScheduledNotificationAsync(notification.identifier);
+          await notifications.cancelScheduledNotificationAsync(notification.identifier);
         }
       }
 
-      // Also cancel any delivered notifications (shown in notification drawer)
-      // Note: expo-notifications doesn't provide a direct way to cancel delivered notifications,
-      // but we can dismiss them by sending a silent update or by using the notification identifier
-      // For now, we'll rely on the scheduled notifications cancellation above
-      // The notification will be automatically removed when the app is opened
-      
       if (__DEV__) {
-        console.log('[NotificationService] ✅ Recording notification cancelled for job:', jobId);
+        console.log('[NotificationService] Recording notification cancelled for job:', jobId);
       }
     } catch (error) {
-      console.error('[NotificationService] Error cancelling recording notification:', error);
+      console.warn('[NotificationService] Error cancelling recording notification:', error);
     }
   }
 }

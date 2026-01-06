@@ -35,8 +35,17 @@ try {
   useImagePickerHook = metaImagePicker.useImagePicker;
   ImageSourceSelectorComponent = metaImagePicker.ImageSourceSelector;
   MetaGlassesCaptureComponent = metaImagePicker.MetaGlassesCapture;
-} catch {
-  // expo-meta-image-picker not available
+  if (__DEV__) {
+    console.log('[MultiModalInput] expo-meta-image-picker loaded:', {
+      hasUseImagePicker: !!useImagePickerHook,
+      hasImageSourceSelector: !!ImageSourceSelectorComponent,
+      hasMetaGlassesCapture: !!MetaGlassesCaptureComponent,
+    });
+  }
+} catch (error) {
+  if (__DEV__) {
+    console.warn('[MultiModalInput] expo-meta-image-picker not available:', error);
+  }
 }
 import { useTheme } from '@/contexts/ThemeContext';
 
@@ -532,6 +541,15 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // - Android: Uses Intent.ACTION_IMAGE_CAPTURE
   // ─────────────────────────────────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
+    if (__DEV__) {
+      console.log('[MultiModalInput] Camera pressed:', {
+        useMetaImagePicker,
+        hasMetaPickerHook: !!metaPickerHook,
+        pendingImagesCount: pendingImages.length,
+        mediaPickerAvailable: mediaPicker.isAvailable(),
+      });
+    }
+
     // Check if we already have 4 images
     if (pendingImages.length >= 4) {
       Alert.alert(
@@ -542,9 +560,36 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       return;
     }
 
-    // If Meta image picker is enabled and available, show source selector
+    // If Meta image picker is enabled and available, use pickImage which shows source selector
     if (useMetaImagePicker && metaPickerHook) {
-      metaPickerHook.showSourceSelector();
+      if (__DEV__) {
+        console.log('[MultiModalInput] Using metaPickerHook.pickImage()');
+      }
+      try {
+        const result = await metaPickerHook.pickImage();
+        if (__DEV__) {
+          console.log('[MultiModalInput] pickImage result:', {
+            canceled: result.canceled,
+            assetsCount: result.assets?.length,
+          });
+        }
+        if (!result.canceled && result.assets?.length > 0) {
+          const asset = result.assets[0];
+          onImageSelected?.({
+            uri: asset.uri,
+            type: asset.type || 'image/jpeg',
+            name: asset.fileName || `image-${Date.now()}.jpg`,
+            size: asset.fileSize,
+            width: asset.width,
+            height: asset.height,
+            source: asset.source,
+            base64: asset.base64,
+          });
+        }
+      } catch (error) {
+        console.error('[MultiModalInput] pickImage error:', error);
+        Alert.alert('Error', 'Failed to pick image. Please try again.');
+      }
       return;
     }
 
@@ -558,6 +603,9 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     }
 
     try {
+      if (__DEV__) {
+        console.log('[MultiModalInput] Launching camera via mediaPicker');
+      }
       const result = await mediaPicker.launchCamera({
         quality: 0.8,
         allowsEditing: false,

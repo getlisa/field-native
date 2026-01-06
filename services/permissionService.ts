@@ -10,8 +10,22 @@
  */
 
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
+
+// Lazy-load expo-notifications to avoid crashes when native module isn't available
+let Notifications: typeof import('expo-notifications') | null = null;
+
+const getNotifications = async () => {
+  if (Notifications) return Notifications;
+
+  try {
+    Notifications = await import('expo-notifications');
+    return Notifications;
+  } catch (error) {
+    console.warn('[PermissionService] expo-notifications not available:', error);
+    throw error;
+  }
+};
 
 /**
  * Permission status interface
@@ -136,11 +150,12 @@ class PermissionService implements IPermissionService {
    */
   async requestNotificationPermission(): Promise<PermissionStatus> {
     try {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      const notifications = await getNotifications();
+      const { status: existingStatus } = await notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
 
       if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
+        const { status } = await notifications.requestPermissionsAsync();
         finalStatus = status;
       }
 
@@ -153,11 +168,11 @@ class PermissionService implements IPermissionService {
             : 'Notification permission denied',
       };
     } catch (error) {
-      console.error('[PermissionService] Error requesting notification permission:', error);
+      console.warn('[PermissionService] Notifications not available:', error);
       return {
         granted: false,
         canAskAgain: false,
-        message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: `Notifications not available`,
       };
     }
   }
@@ -308,7 +323,8 @@ class PermissionService implements IPermissionService {
    */
   private async checkNotificationPermission(): Promise<PermissionStatus> {
     try {
-      const { status } = await Notifications.getPermissionsAsync();
+      const notifications = await getNotifications();
+      const { status } = await notifications.getPermissionsAsync();
       return {
         granted: status === 'granted',
         canAskAgain: status === 'undetermined',
@@ -318,7 +334,7 @@ class PermissionService implements IPermissionService {
       return {
         granted: false,
         canAskAgain: false,
-        message: `Error checking notification permission: ${error instanceof Error ? error.message : 'Unknown'}`,
+        message: `Notifications not available`,
       };
     }
   }

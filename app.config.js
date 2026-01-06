@@ -97,6 +97,7 @@ export default {
         },
       ],
       'expo-localization',
+      'expo-notifications',
       // Meta Wearables plugin - configure with your Meta Developer credentials
       [
         'expo-meta-wearables',
@@ -104,6 +105,7 @@ export default {
           metaAppId: process.env.META_APP_ID || 'YOUR_META_APP_ID',
           clientToken: process.env.META_CLIENT_TOKEN || 'YOUR_META_CLIENT_TOKEN',
           appLinkScheme: 'field',
+          githubToken: process.env.GITHUB_TOKEN || '',
         },
       ],
     ],

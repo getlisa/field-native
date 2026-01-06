@@ -98,6 +98,21 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({
   );
 };
 
+// Default theme value for when context is not yet available (during initial render)
+const defaultThemeValue: ThemeContextValue = {
+  colorScheme: 'light',
+  themePreference: 'system',
+  isDark: false,
+  colors: Colors.light,
+  getColor: (key: ColorKey) => Colors.light[key],
+  spacing: Spacing,
+  borderRadius: BorderRadius,
+  fontSizes: FontSizes,
+  shadows: Shadows.light,
+  setThemePreference: () => {},
+  toggleTheme: () => {},
+};
+
 /**
  * Hook to access theme values
  * @example
@@ -106,8 +121,9 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({
  */
 export const useTheme = (): ThemeContextValue => {
   const context = useContext(ThemeContext);
+  // Return default values if context not yet available (expo-router initial render)
   if (!context) {
-    throw new Error('useTheme must be used within a ThemeProvider');
+    return defaultThemeValue;
   }
   return context;
 };
