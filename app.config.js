@@ -2,14 +2,15 @@ import 'dotenv/config';
 
 export default {
   expo: {
-    name: 'Clara Tech Copilot',
-    slug: 'field',
+    name: 'Clara Glasses',
+    slug: 'claraglasses',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
-    scheme: 'field',
+    scheme: 'claraglasses',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
+    owner: "sriram.kumar",
     updates: {
       url: 'https://u.expo.dev/dbcac3d2-0bae-4ccf-ae06-71eddb096c0c',
     },
@@ -30,7 +31,7 @@ export default {
         // Background audio mode (for continuous recording)
         UIBackgroundModes: ['audio'],
       },
-      bundleIdentifier: 'com.justclara.field',
+      bundleIdentifier: 'com.claraglasses.field',
       usesNonExemptEncryption: false,
     },
     android: {
@@ -105,7 +106,7 @@ export default {
     extra: {
       router: {},
       eas: {
-        projectId: 'dbcac3d2-0bae-4ccf-ae06-71eddb096c0c',
+        projectId: '6b1e9c87-4719-4f22-9432-bd4dff56772e',
       },
     },
   },

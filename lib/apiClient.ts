@@ -2,7 +2,7 @@ import useAuthStore from '@/store/useAuthStore';
 import axios, { type AxiosError, type AxiosRequestConfig, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 
 // Read API base URL from public env with localhost fallback for dev
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:4000/api';
+export const API_BASE_URL = "https://techcopilot-core.justclara.ai/api" //process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:4000/api';
 
 export type ApiTokens = {
   accessToken?: string;

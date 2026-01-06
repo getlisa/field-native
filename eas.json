@@ -23,8 +23,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://technician-copilot-services-staging.justclara.ai/api",
-        "EXPO_PUBLIC_COPILOT_BASE_URL": "https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging"
+        "EXPO_PUBLIC_API_BASE_URL": "https://techcopilot-core.justclara.ai/api",
+        "EXPO_PUBLIC_COPILOT_BASE_URL": "https://techcopilot-assistant.justclara.ai"
       }
     },
     "production": {
@@ -44,15 +44,15 @@
   "submit": {
     "preview": {
       "ios": {
-        "appleId": "ashraf.shaik@zentrades.pro",
-        "ascAppId": "6756868722",
+        "appleId": "sriram.kumar@zentrades.pro",
+        "ascAppId": "6757388242",
         "appleTeamId": "TS3BFX5G72"
       }
     },
     "production": {
       "ios": {
-        "appleId": "ashraf.shaik@zentrades.pro",
-        "ascAppId": "6756868722",
+        "appleId": "sriram.kumar@zentrades.pro",
+        "ascAppId": "6757388242",
         "appleTeamId": "TS3BFX5G72"
       }
     }

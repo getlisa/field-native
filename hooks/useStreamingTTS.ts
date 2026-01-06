@@ -23,9 +23,10 @@ interface AudioQueueItem {
 const FLUSH_CHAR_THRESHOLD = 60; // Send smaller chunks for lower latency
 const FLUSH_TIMEOUT_MS = 150; // Flush quickly after short pause
 
-const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
-  ? `${process.env.EXPO_PUBLIC_COPILOT_BASE_URL}/api/v1`
-  : 'https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging/api/v1';
+const COPILOT_API_BASE = "https://techcopilot-assistant.justclara.ai"
+// process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
+//   ? `${process.env.EXPO_PUBLIC_COPILOT_BASE_URL}/api/v1`
+//   : 'https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging/api/v1';
 
 export function useStreamingTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false);
