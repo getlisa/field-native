@@ -1,6 +1,6 @@
 import { useAuthStore } from '@/store/useAuthStore';
 
-const COPILOT_API_BASE = "https://techcopilot-assistant.justclara.ai"
+const COPILOT_API_BASE = "https://techcopilot-assistant.justclara.ai/api/v1"
 // const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
 //   ? `${process.env.EXPO_PUBLIC_COPILOT_BASE_URL}/api/v1`
 //   : 'https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging/api/v1';
