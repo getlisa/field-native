@@ -12,17 +12,11 @@ import { ThemedStatusBar } from '@/components/ThemedStatusBar';
 import { getNotificationService, initializeNotificationHandler } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
 import { useRecordingStore } from '@/store/useRecordingStore';
+import { config } from '@/lib/config';
 
-// Import PostHog (enabled for testing, change to !__DEV__ for production only)
-let PostHogProvider: any = null;
-let usePostHogHook: any = null;
-try {
-  const posthog = require('posthog-react-native');
-  PostHogProvider = posthog.PostHogProvider;
-  usePostHogHook = posthog.usePostHog;
-} catch (error) {
-  // PostHog not available, continue without it
-}
+// Import PostHog (enabled when EXPO_PUBLIC_POSTHOG_API_KEY is set)
+import { usePostHog, PostHogProvider } from 'posthog-react-native';
+import { posthog } from '@/lib/posthog';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -32,7 +26,7 @@ export const unstable_settings = {
 // As per PostHog docs: https://posthog.com/docs/libraries/react-native#with-expo-router
 function ScreenTracker() {
   const segments = useSegments();
-  const posthog = usePostHogHook ? usePostHogHook() : null;
+  const posthog = usePostHog();
 
   useEffect(() => {
     if (!posthog || typeof posthog?.screen !== 'function') return;
@@ -378,23 +372,18 @@ export default function RootLayout() {
     </QueryProvider>
   );
 
-  // Wrap with PostHogProvider (enable for testing, change to !__DEV__ for production only)
-  if (PostHogProvider) {
-    const posthogApiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
-    const posthogHost = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
-    
-    if (posthogApiKey) {
-      return (
-        <PostHogProvider
-          apiKey={posthogApiKey}
+  // Wrap with PostHogProvider using our instance (enabled when EXPO_PUBLIC_POSTHOG_API_KEY is set)
+  if (posthog) {
+    return (
+      <PostHogProvider
+          client={posthog}
           options={{
-            host: posthogHost,
-            debug: __DEV__,
             captureAppLifecycleEvents: true, // Enable Application Opened, Became Active, Backgrounded, Installed, Updated events
+            sessionExpirationTimeSeconds: 900, // 15 minutes
           }}
           autocapture={{
             captureTouches: true,
-            captureScreens: false, // Disabled for expo-router - we track manually using usePostHog hook
+            captureScreens: false, // Disabled for expo-router - we track manually using ScreenTracker component
             ignoreLabels: [],
             customLabelProp: 'ph-label',
             maxElementsCaptured: 20,
@@ -407,7 +396,6 @@ export default function RootLayout() {
         </PostHogProvider>
       );
     }
-  }
 
   return appContent;
 }

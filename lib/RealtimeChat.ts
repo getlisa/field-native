@@ -13,6 +13,7 @@
 
 import useAuthStore from '@/store/useAuthStore';
 import { API_BASE_URL } from './apiClient';
+import { posthog, PostHogEvents, getCompanyIdForTracking } from './posthog';
 
 export interface WordTimestamp {
   word: string;
@@ -106,6 +107,9 @@ export class RealtimeChat {
   private sequenceNumber = 0;
   private isReady = false;
   private manuallyStopped = false;
+  private sessionStartedAt: Date | null = null;
+  private endSent = false; // Track if end signal has been sent
+  private isDisconnecting = false; // Track if disconnect is in progress
 
   constructor(options: RealtimeChatOptions) {
     this.options = options;
@@ -114,6 +118,9 @@ export class RealtimeChat {
   async init(): Promise<void> {
     try {
       this.manuallyStopped = false;
+      this.sessionStartedAt = null;
+      this.endSent = false;
+      this.isDisconnecting = false;
 
       const { visitSessionId } = this.options;
 
@@ -192,6 +199,7 @@ export class RealtimeChat {
           if (data.type === 'ready' && !this.isReady) {
             clearTimeout(timeout);
             this.isReady = true;
+            this.sessionStartedAt = new Date();
 
             if (__DEV__) {
               console.log('[Transcription] ✅ Server ready - starting audio capture');
@@ -289,7 +297,26 @@ export class RealtimeChat {
           console.log('[Transcription] ✅ Session ended');
         }
         this.manuallyStopped = true;
+        
+        // Track recording stopped event
+        console.log('PostHog tracking recording stopped:', this.sessionStartedAt);
+        if (this.sessionStartedAt && posthog) {
+          const duration = Math.round((new Date().getTime() - this.sessionStartedAt.getTime()) / 1000); // duration in seconds
+          const user = useAuthStore.getState().user;
+          const companyId = user?.company_id;
+
+          console.log('PostHog tracking recording stopped:', companyId, duration);
+          const companyIdForTracking = companyId !== undefined ? Number(companyId) : getCompanyIdForTracking();
+          if (companyIdForTracking !== undefined) {
+            posthog.capture(PostHogEvents.RECORDING_STOPPED, {
+              company_id: companyIdForTracking,
+              duration: duration,
+            });
+          }
+        }
+        
         this.options.onSessionEnded?.(message.audioUrl);
+        this.cleanup();
         break;
 
       case 'session-cancelled':
@@ -299,8 +326,8 @@ export class RealtimeChat {
         break;
 
       case 'error':
-        console.error('[Transcription] ❌ Error:', message.error);
-        this.options.onError?.(new Error(message.error || 'Unknown error'));
+        console.error('[Transcription] ❌ Error:', message);
+        this.options.onError?.(new Error(message || 'Unknown error'));
         break;
 
       default:
@@ -335,6 +362,14 @@ export class RealtimeChat {
   }
 
   end(): void {
+    // Prevent multiple calls
+    if (this.endSent) {
+      if (__DEV__) {
+        console.warn('[RealtimeChat] ⚠️ End signal already sent, skipping');
+      }
+      return;
+    }
+    
     this.manuallyStopped = true;
     if (!this.ws) {
       if (__DEV__) {
@@ -356,6 +391,7 @@ export class RealtimeChat {
         combinedBuffer[0] = 0x01; // Control message type prefix
         combinedBuffer.set(jsonBytes, 1);
         this.ws.send(combinedBuffer.buffer.slice(0, combinedBuffer.byteLength));
+        this.endSent = true; // Mark as sent
         if (__DEV__) {
           console.log('[RealtimeChat] ✅ End signal sent successfully');
         }
@@ -391,18 +427,33 @@ export class RealtimeChat {
   }
 
   disconnect(): void {
+    // Prevent multiple calls
+    if (this.isDisconnecting) {
+      if (__DEV__) {
+        console.warn('[Transcription] ⚠️ Disconnect already in progress, skipping');
+      }
+      return;
+    }
+    
+    this.isDisconnecting = true;
     if (__DEV__) {
       console.log('[Transcription] 🔌 Disconnecting...');
     }
     this.manuallyStopped = true;
     
     try {
-      this.end();
+      // Only send end if not already sent
+      if (!this.endSent) {
+        this.end();
+      }
     } catch (error) {
       console.warn('[Transcription] Error during end():', error);
+      // If end() fails, cleanup immediately since we won't receive session-ended
+      this.cleanup();
     }
     
-    this.cleanup();
+    // Don't cleanup here - wait for session-ended event to handle cleanup
+    // This ensures the onmessage handler remains active to receive session-ended
   }
 
   isConnected(): boolean {
@@ -431,6 +482,9 @@ export class RealtimeChat {
     }
 
     this.isReady = false;
+    this.sessionStartedAt = null;
+    this.endSent = false;
+    this.isDisconnecting = false;
     
     if (__DEV__) {
       console.log('[Transcription] 🧹 Cleanup complete');

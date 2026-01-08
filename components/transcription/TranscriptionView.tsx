@@ -596,12 +596,29 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   }, [error, isConnecting, isCompleted, isConnected, isRecording]);
 
   useEffect(() => {
-    // Always show when error/connecting/inactive
-    if (statusKey === 'error' || statusKey === 'connecting' || statusKey === 'inactive') {
+    // Always show when connecting/inactive (no auto-hide)
+    if (statusKey === 'connecting' || statusKey === 'inactive') {
       setStatusVisible(true);
       statusOpacity.setValue(1);
       return;
     }
+    
+    // For error: show for a few seconds then fade out
+    if (statusKey === 'error') {
+      setStatusVisible(true);
+      statusOpacity.setValue(1);
+      const errorTimer = setTimeout(() => {
+        Animated.timing(statusOpacity, {
+          toValue: 0,
+          duration: 400,
+          useNativeDriver: true,
+        }).start(() => {
+          setStatusVisible(false);
+        });
+      }, 5000); // Show error for 5 seconds before fading out
+      return () => clearTimeout(errorTimer);
+    }
+    
     // For live/recording/completed: show briefly then fade out
     setStatusVisible(true);
     statusOpacity.setValue(1);

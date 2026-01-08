@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useNavigation, usePreventRemove } from '@react-navigation/native';
+import { usePreventRemove } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -8,11 +8,7 @@ import {
   Animated,
   AppState,
   BackHandler,
-  Dimensions,
-  GestureResponderEvent,
   KeyboardAvoidingView,
-  PanResponder,
-  PanResponderGestureState,
   Platform,
   Pressable,
   StyleSheet,
@@ -45,6 +41,7 @@ import {
 import { getPermissionService } from '@/services/permissionService';
 import { jobService } from '@/services/jobService';
 import type { ProactiveSuggestionsMessage } from '@/lib/RealtimeChat';
+import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 
 type TabKey = 'transcription' | 'askAI' | 'checklist' | 'insights';
 
@@ -654,6 +651,16 @@ export default function JobDetailPage() {
       // Both microphone and notification permissions are granted - proceed with job start
       const session = await startJob(id);
       if (session?.id && job?.company_id) {
+        // Track job started event
+        if (posthog) {
+          const companyId = job.company_id ? Number(job.company_id) : getCompanyIdForTracking();
+          posthog.capture(PostHogEvents.JOB_STARTED, {
+            job_id: id,
+            ...(companyId !== undefined && { company_id: companyId }),
+            ...(job.technician_id && { technician_id: job.technician_id }),
+          });
+        }
+        
         // Start transcription immediately after starting job
         setActiveTab('transcription');
         await startTranscription(session.id, job.company_id, {

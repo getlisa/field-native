@@ -158,7 +158,7 @@ export const LoginForm: React.FC<Props> = ({
           <Button
             onPress={onSubmit}
             loading={loading}
-            disabled={loading}
+            disabled={loading || !email.trim() || !password.trim()}
             fullWidth={!isAuthenticated || !onLogout}
             icon="log-in-outline"
           >

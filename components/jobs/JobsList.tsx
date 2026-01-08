@@ -25,6 +25,7 @@ import type { Job, JobStatus, JobFilterOptions } from '@/services/jobService';
 import type { User } from '@/store/useAuthStore';
 import { jobService, type CreateJobRequest } from '@/services/jobService';
 import { usersService } from '@/services/usersService';
+import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 
 type Props = {
   onRefresh: (filters?: JobFilterOptions) => void;
@@ -321,7 +322,18 @@ export const JobsList: React.FC<Props> = ({
         payload.technician_id = currentUser.id;
       }
 
-      await jobService.createJob(payload);
+      const createdJob = await jobService.createJob(payload);
+      
+      // Track job creation event
+      if (posthog) {
+        const companyId = createdJob.company_id ? Number(createdJob.company_id) : getCompanyIdForTracking();
+        posthog.capture(PostHogEvents.JOB_CREATED, {
+          job_id: createdJob.id,
+          ...(companyId !== undefined && { company_id: companyId }),
+          ...(createdJob.technician_id && { technician_id: createdJob.technician_id }),
+        });
+      }
+      
       // reset form
       setCustomerName('');
       setAddress('');
@@ -371,7 +383,21 @@ export const JobsList: React.FC<Props> = ({
             Manage your service jobs
           </ThemedText>
         </View>
-        <Button size="sm" variant="primary" onPress={() => setIsCreateModalOpen(true)} icon="add">
+        <Button 
+          size="sm" 
+          variant="primary" 
+          onPress={() => {
+            setIsCreateModalOpen(true);
+            // Track job creation started
+            if (posthog) {
+              const companyId = getCompanyIdForTracking();
+              posthog.capture(PostHogEvents.JOB_CREATION_STARTED, {
+                ...(companyId !== undefined && { company_id: companyId }),
+              });
+            }
+          }} 
+          icon="add"
+        >
           New Job
         </Button>
       </View>
@@ -539,7 +565,20 @@ export const JobsList: React.FC<Props> = ({
             )}
 
             <View style={styles.modalButtons}>
-              <Button variant="secondary" size="sm" onPress={() => setIsFilterModalOpen(false)}>
+              <Button 
+                variant="secondary" 
+                size="sm" 
+                onPress={() => {
+                  setIsFilterModalOpen(false);
+                  // Track filter cancelled
+                  if (posthog) {
+                    const companyId = getCompanyIdForTracking();
+                    posthog.capture(PostHogEvents.JOB_FILTER_CANCELLED, {
+                      ...(companyId !== undefined && { company_id: companyId }),
+                    });
+                  }
+                }}
+              >
                 Cancel
               </Button>
               <Button
@@ -577,6 +616,18 @@ export const JobsList: React.FC<Props> = ({
                   // Preserve search if it exists
                   if (debouncedSearch.trim()) {
                     filterOptions.job_target_name = debouncedSearch.trim();
+                  }
+                  
+                  // Track filter applied
+                  if (posthog) {
+                    const companyId = getCompanyIdForTracking();
+                    posthog.capture(PostHogEvents.JOB_FILTER_APPLIED, {
+                      ...(companyId !== undefined && { company_id: companyId }),
+                      ...(filterOptions.status && { status: filterOptions.status }),
+                      ...(filterOptions.start_timestamp_from && { has_date_from: true }),
+                      ...(filterOptions.start_timestamp_to && { has_date_to: true }),
+                      ...(filterOptions.job_target_name && { has_search: true }),
+                    });
                   }
                   
                   // Update parent's filter state
@@ -804,7 +855,20 @@ export const JobsList: React.FC<Props> = ({
                 backgroundColor: colors.backgroundSecondary,
                 borderTopColor: colors.border,
               }]}>
-              <Button variant="secondary" size="sm" onPress={() => setIsCreateModalOpen(false)}>
+              <Button 
+                variant="secondary" 
+                size="sm" 
+                onPress={() => {
+                  setIsCreateModalOpen(false);
+                  // Track job creation cancelled
+                  if (posthog) {
+                    const companyId = getCompanyIdForTracking();
+                    posthog.capture(PostHogEvents.JOB_CREATION_CANCELLED, {
+                      ...(companyId !== undefined && { company_id: companyId }),
+                    });
+                  }
+                }}
+              >
                 Cancel
               </Button>
               <Button variant="primary" size="sm" loading={submitting} onPress={handleSubmit}>

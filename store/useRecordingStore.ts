@@ -309,37 +309,16 @@ export const useRecordingStore = create<TranscriptionState>((set, get) => {
       // Stop audio recording
       await stopAudioRecording();
       
-      // Send end event and disconnect WebSocket
+      // Disconnect WebSocket (disconnect() handles sending end signal internally)
       if (state._realtimeChat) {
-        try {
-          if (state._realtimeChat.isConnected()) {
-            if (__DEV__) {
-              console.log('[RecordingStore] 📤 Sending end event to server...');
-            }
-            state._realtimeChat.end();
-            if (__DEV__) {
-              console.log('[RecordingStore] ✅ End event sent - server will complete the job');
-            }
-            
-            // Wait to ensure end event is sent
-            await new Promise(resolve => setTimeout(resolve, 200));
-          } else {
-            if (__DEV__) {
-              console.warn('[RecordingStore] ⚠️ WebSocket not connected, cannot send end event');
-            }
-          }
-        } catch (error) {
-          console.error('[RecordingStore] ❌ Error sending end event:', error);
-        }
-        
-        // Disconnect
         try {
           if (__DEV__) {
             console.log('[RecordingStore] 🔌 Disconnecting WebSocket...');
           }
+          // disconnect() will handle sending end signal if needed
           state._realtimeChat.disconnect();
           if (__DEV__) {
-            console.log('[RecordingStore] ✅ WebSocket disconnected');
+            console.log('[RecordingStore] ✅ Disconnect initiated - waiting for session-ended');
           }
         } catch (error) {
           console.error('[RecordingStore] ❌ Error disconnecting WebSocket:', error);

@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useEffect, useMemo, useState, type P
 
 import authService, { type LoginRequest } from '@/services/authService';
 import { useAuthStore, type User } from '@/store/useAuthStore';
+import { posthog, PostHogEvents } from '@/lib/posthog';
 
 type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'error';
 
@@ -42,10 +43,19 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
 
       const userPayload = (response.user ?? store.user ?? null) as User | null;
 
-      // Persist auth state
+      // Persist auth state (PostHog identify is handled in store.login)
       store.login(userPayload, access ?? null, refreshToken ?? null);
 
       if (access) {
+        // Track user logged in event
+        if (posthog && userPayload) {
+          const companyId = userPayload.company_id ? Number(userPayload.company_id) : undefined;
+          posthog.capture(PostHogEvents.USER_LOGGED_IN, {
+            ...(companyId !== undefined && { company_id: companyId }),
+            ...(userPayload.role && { role: userPayload.role }),
+          });
+        }
+        
         setStatus('authenticated');
         setError(null);
       } else {
@@ -74,6 +84,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
 
   const logout = useCallback(() => {
     authService.logout();
+    // PostHog reset is handled in store.logout
     store.logout();
     setStatus('idle');
     setError(null);
