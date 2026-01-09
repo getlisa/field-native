@@ -20,8 +20,17 @@ interface AudioQueueItem {
   audioUri?: string;
 }
 
-const FLUSH_CHAR_THRESHOLD = 60; // Send smaller chunks for lower latency
 const FLUSH_TIMEOUT_MS = 150; // Flush quickly after short pause
+
+// Strip basic markdown artifacts so TTS receives clean text.
+const normalizeChunk = (input: string) => {
+  return input
+    .replace(/\*\*/g, ' ') // bold markers
+    .replace(/__|`/g, ' ') // underline/code markers
+    .replace(/^\s*#+\s+/gm, ' ') // headings (keep line, drop markdown)
+    .replace(/^\s*[-*]\s+/gm, ' ') // bullet prefixes (keep line, drop markdown)
+    .trimStart();
+};
 
 const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
   ? `${process.env.EXPO_PUBLIC_COPILOT_BASE_URL}/api/v1`
@@ -317,68 +326,74 @@ export function useStreamingTTS() {
   // Store playNext in ref to avoid circular dependencies
   playNextRef.current = playNext;
 
-  const addToQueue = useCallback((text: string) => {
-    // Immediately reflect that speech is pending so the stop button appears without delay
-    setIsSpeaking(true);
-    textBufferRef.current += text;
-
-    // Clear existing timeout
+  const flushBufferedText = useCallback(() => {
     if (bufferTimeoutRef.current) {
       clearTimeout(bufferTimeoutRef.current);
+      bufferTimeoutRef.current = null;
     }
 
-    // Buffer logic: send chunk when we have enough text or at sentence boundaries
-    const shouldFlush = 
-      textBufferRef.current.length >= FLUSH_CHAR_THRESHOLD || // Smaller threshold for faster start
-      /[.!?]\s*$/.test(textBufferRef.current); // Or ends with sentence boundary
-
-    if (shouldFlush && textBufferRef.current.trim()) {
-      const textToSpeak = textBufferRef.current.trim();
-      textBufferRef.current = '';
-      
-      const newItem = { text: textToSpeak };
-      queueRef.current.push(newItem);
-      console.log('[useStreamingTTS] Added chunk to queue, new size:', queueRef.current.length);
-      setIsSpeaking(true); // reflect speaking/queued state immediately
-      // Start generating audio immediately in parallel
-      generateAudio(newItem);
-    } else {
-      // Set timeout to flush buffer quickly after no new tokens
-      bufferTimeoutRef.current = setTimeout(() => {
-        if (textBufferRef.current.trim()) {
-          const textToSpeak = textBufferRef.current.trim();
-          textBufferRef.current = '';
-          
-          const newItem = { text: textToSpeak };
-          queueRef.current.push(newItem);
-          console.log('[useStreamingTTS] Added buffered chunk to queue, new size:', queueRef.current.length);
-          setIsSpeaking(true); // reflect speaking/queued state immediately
-          
-          // Start generating audio immediately in parallel
-          generateAudio(newItem);
-        }
-      }, FLUSH_TIMEOUT_MS);
-    }
-  }, [generateAudio]);
-
-  const flush = useCallback(() => {
-    // Flush any remaining text in buffer
-    if (bufferTimeoutRef.current) {
-      clearTimeout(bufferTimeoutRef.current);
-    }
-    
     if (textBufferRef.current.trim()) {
       const textToSpeak = textBufferRef.current.trim();
       textBufferRef.current = '';
       
       const newItem = { text: textToSpeak };
       queueRef.current.push(newItem);
-      console.log('[useStreamingTTS] Flushed remaining text to queue, size:', queueRef.current.length);
-      
+      console.log('[useStreamingTTS] Flushed buffered text to queue, size:', queueRef.current.length);
+      setIsSpeaking(true); // reflect speaking/queued state immediately
+
       // Start generating audio immediately in parallel
       generateAudio(newItem);
     }
   }, [generateAudio]);
+
+  const addToQueue = useCallback((text: string) => {
+    // Immediately reflect that speech is pending so the stop button appears without delay
+    setIsSpeaking(true);
+    
+    const normalizedText = normalizeChunk(text);
+    if (!normalizedText) {
+      return;
+    }
+
+    // Clear any pending timeout while we process the new chunk
+    if (bufferTimeoutRef.current) {
+      clearTimeout(bufferTimeoutRef.current);
+      bufferTimeoutRef.current = null;
+    }
+
+    // Merge incoming text until we hit newline boundaries. Each newline means a line is complete,
+    // so we flush the buffer to TTS right away.
+    const newlineRegex = /\n+/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = newlineRegex.exec(normalizedText)) !== null) {
+      const segment = normalizedText.slice(lastIndex, match.index);
+      if (segment) {
+        textBufferRef.current += segment;
+      }
+      flushBufferedText(); // flush completed line
+      lastIndex = match.index + match[0].length;
+    }
+
+    const remaining = normalizedText.slice(lastIndex);
+    if (remaining) {
+      textBufferRef.current += remaining;
+    }
+
+    // If we have remaining text without a newline yet, set a short timer to avoid getting stuck
+    // on partial lines when the stream pauses.
+    if (textBufferRef.current.trim()) {
+      bufferTimeoutRef.current = setTimeout(() => {
+        flushBufferedText();
+      }, FLUSH_TIMEOUT_MS);
+    }
+  }, [flushBufferedText]);
+
+  const flush = useCallback(() => {
+    // Flush any remaining text in buffer
+    flushBufferedText();
+  }, [flushBufferedText]);
 
   const stop = useCallback(() => {
     console.log('[useStreamingTTS] Stopping TTS');

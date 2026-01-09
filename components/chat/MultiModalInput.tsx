@@ -30,6 +30,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 // Custom recording options optimized for OpenAI Whisper API compatibility
 // iOS: Uses Linear PCM (WAV) for maximum compatibility
 // Android: Uses AAC (M4A) which works well
+const SILENCE_TIMEOUT_MS = 200; // stop after this much silence if recording
 const OPENAI_COMPATIBLE_RECORDING_OPTIONS: RecordingOptions = {
   extension: Platform.OS === 'ios' ? '.wav' : '.m4a',
   sampleRate: 16000, // 16kHz is optimal for speech recognition
