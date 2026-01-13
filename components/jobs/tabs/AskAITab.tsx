@@ -148,13 +148,6 @@ export const AskAITab: React.FC = () => {
     }
   }, [conversationId, jobId, user?.id]);
 
-  // Scroll to the latest message
-  const scrollToLatestMessage = useCallback((animated: boolean = true) => {
-    requestAnimationFrame(() => {
-      messagesContainerRef.current?.scrollToEnd({ animated });
-    });
-  }, []);
-
   // Map API messages to UI messages
   const mapCopilotMessageToUi = useCallback((msg: CopilotMessage): Message => {
     return {
@@ -194,7 +187,6 @@ export const AskAITab: React.FC = () => {
 
         if (isMounted) {
           setMessages(history);
-          scrollToLatestMessage(false);
         }
       } catch (e) {
         console.warn('[AskAI] Failed to load chat history', e);
@@ -210,13 +202,7 @@ export const AskAITab: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, scrollToLatestMessage, user?.id]);
-
-  // Scroll to latest message when messages change
-  useEffect(() => {
-    if (messages.length === 0) return;
-    scrollToLatestMessage();
-  }, [messages.length, scrollToLatestMessage]);
+  }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
 
   /**
    * Main message handler - supports text, voice, and images
@@ -727,13 +713,16 @@ export const AskAITab: React.FC = () => {
 
   const HORIZONTAL_PADDING = 12;
 
+  const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['left', 'right']}>
       <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Messages Area */}
       <FlatList
         ref={messagesContainerRef}
-        data={messages}
+        data={invertedMessages}
+        inverted
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         extraData={listExtraData}
@@ -742,11 +731,9 @@ export const AskAITab: React.FC = () => {
         initialNumToRender={12}
         removeClippedSubviews
         ListEmptyComponent={isFetchingHistory ? <ActivityIndicator /> : renderEmptyState}
-        ListFooterComponent={renderProcessingIndicator}
+        ListHeaderComponent={renderProcessingIndicator}
         contentContainerStyle={[styles.messagesList, { paddingHorizontal: HORIZONTAL_PADDING }]}
         showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => scrollToLatestMessage(false)}
-        onLayout={() => scrollToLatestMessage(false)}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       />
