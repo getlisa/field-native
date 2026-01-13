@@ -32,6 +32,7 @@ import { useTurnManagement } from '@/hooks/useTurnManagement';
 import { useSwipeNavigation } from '@/hooks/useSwipeNavigation';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useRecordingStore } from '@/store/useRecordingStore';
+import { useSettingsStore } from '@/store/useSettingsStore';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
 import {
@@ -61,6 +62,8 @@ export default function JobDetailPage() {
   const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const router = useRouter();
   const currentUser = useAuthStore((state) => state.user);
+  const isTTSEnabled = useSettingsStore((state) => state.isTTSEnabled);
+  const setTTSEnabled = useSettingsStore((state) => state.setTTSEnabled);
   const { colors, shadows } = useTheme();
 
   // Initialize activeTab from URL parameter if provided, otherwise default to 'transcription'
@@ -1259,153 +1262,158 @@ export default function JobDetailPage() {
           </View>
 
           {/* Action Button or Status Badge */}
-          {isAssignedToJob ? (
-            <View style={styles.headerRight}>
-              {job.status === 'scheduled' && (
-                <Button
-                  onPress={handleStartJob}
-                  loading={actionLoading}
-                  disabled={actionLoading}
-                  size="sm"
-                  variant="primary"
-                >
-                  Start
-                </Button>
-              )}
-              {job.status === 'ongoing' && (
-                <View style={styles.actionButtonRow}>
-                  {/* Show LIVE indicator when recording */}
-                  {isRecording && (
-                    <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420', marginRight: 8 }]}>
-                      <View style={styles.liveDot} />
-                      <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
-                        LIVE
-                      </ThemedText>
-                    </View>
-                  )}
-                  {(() => {
-                    const showResume = !isRecording && !isConnected && !isConnecting && (visitSession?.id || job?.visit_sessions?.id);
-                    const showIconOnly = showResume; // Use icons when both buttons are shown
-                    
-                    if (showIconOnly) {
-                      return (
-                        <>
-                          {/* <Pressable
-                            onPress={handleResumeJob}
-                            disabled={actionLoading}
-                            style={({ pressed }) => [
-                              styles.iconButton,
-                              {
-                                backgroundColor: colors.buttonPrimary,
-                                opacity: actionLoading || pressed ? 0.7 : 1,
-                              },
-                            ]}
-                          >
-                            {actionLoading ? (
-                              <ActivityIndicator size="small" color={colors.textInverse} />
-                            ) : (
-                              <Ionicons name="play" size={20} color={colors.textInverse} />
-                            )}
-                          </Pressable> */}
-                          <Button
-                            onPress={handleCompleteJob}
-                            loading={actionLoading || isCompletingJob}
-                            disabled={actionLoading || isCompletingJob}
-                            size="sm"
-                            variant="primary"
-                            style={styles.actionButton}
-                          >
-                            Stop
-                          </Button>
-                        </>
-                      );
-                    }
-                    
-                    return (
-                      <Button
-                        onPress={handleCompleteJob}
-                        loading={actionLoading || isCompletingJob}
-                        disabled={actionLoading || isCompletingJob}
-                        size="sm"
-                        variant="primary"
-                        style={styles.actionButton}
-                      >
-                        {isCompletingJob ? 'Processing...' : 'Stop'}
-                      </Button>
-                    );
-                  })()}
-                </View>
-              )}
-              {job.status === 'completed' && (
-                <View style={[styles.statusBadge, { backgroundColor: colors.success + '20' }]}>
-                  <Ionicons name="checkmark-circle" size={16} color={colors.success} />
-                  <ThemedText style={[styles.statusBadgeText, { color: colors.success }]}>
-                    Completed
-                  </ThemedText>
-                </View>
-              )}
-            </View>
-          ) : (
-            <View style={styles.headerRight}>
-              {job.status === 'scheduled' && (
-                <View style={[styles.statusBadge, { backgroundColor: colors.primary + '20' }]}>
-                  <Ionicons name="calendar-outline" size={16} color={colors.primary} />
-                  <ThemedText style={[styles.statusBadgeText, { color: colors.primary }]}>
-                    Scheduled
-                  </ThemedText>
-                </View>
-              )}
-              {job.status === 'ongoing' && (
-                <View style={styles.liveStatusContainer}>
-                  {/* For viewers: show LIVE when receiving cached_turns OR audio */}
-                  {/* For assigned users: show LIVE when recording */}
-                  {((!isAssignedToJob && (isReceivingTurns || isReceivingAudio)) || (isAssignedToJob && isRecording)) ? (
-                    <>
-                      <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420' }]}>
+          <View style={styles.headerRight}>
+            {/* Speaker Toggle (Global Setting) - Only visible on AskAI tab */}
+            {activeTab === 'askAI' && (
+              <Pressable
+                onPress={() => setTTSEnabled(!isTTSEnabled)}
+                style={({ pressed }) => [
+                  styles.audioToggle,
+                  {
+                    backgroundColor: isTTSEnabled ? colors.primary + '20' : colors.backgroundSecondary,
+                    opacity: pressed ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={isTTSEnabled ? 'volume-high' : 'volume-mute'}
+                  size={20}
+                  color={isTTSEnabled ? colors.primary : colors.iconSecondary}
+                />
+              </Pressable>
+            )}
+
+            {isAssignedToJob ? (
+              <>
+                {job.status === 'scheduled' && (
+                  <Button
+                    onPress={handleStartJob}
+                    loading={actionLoading}
+                    disabled={actionLoading}
+                    size="sm"
+                    variant="primary"
+                  >
+                    Start
+                  </Button>
+                )}
+                {job.status === 'ongoing' && (
+                  <View style={styles.actionButtonRow}>
+                    {/* Show LIVE indicator when recording */}
+                    {isRecording && (
+                      <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420', marginRight: 8 }]}>
                         <View style={styles.liveDot} />
                         <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
                           LIVE
                         </ThemedText>
                       </View>
-                      {/* Audio toggle for viewers when receiving audio */}
-                      {!isAssignedToJob && isReceivingAudio && (
-                        <Pressable
-                          onPress={toggleAudio}
-                          style={[
-                            styles.audioToggle,
-                            {
-                              backgroundColor: isAudioEnabled ? colors.primary : colors.backgroundSecondary,
-                            },
-                          ]}
+                    )}
+                    {(() => {
+                      const showResume = !isRecording && !isConnected && !isConnecting && (visitSession?.id || job?.visit_sessions?.id);
+                      const showIconOnly = showResume; // Use icons when both buttons are shown
+                      
+                      if (showIconOnly) {
+                        return (
+                          <>
+                            <Button
+                              onPress={handleCompleteJob}
+                              loading={actionLoading || isCompletingJob}
+                              disabled={actionLoading || isCompletingJob}
+                              size="sm"
+                              variant="primary"
+                              style={styles.actionButton}
+                            >
+                              Stop
+                            </Button>
+                          </>
+                        );
+                      }
+                      
+                      return (
+                        <Button
+                          onPress={handleCompleteJob}
+                          loading={actionLoading || isCompletingJob}
+                          disabled={actionLoading || isCompletingJob}
+                          size="sm"
+                          variant="primary"
+                          style={styles.actionButton}
                         >
-                          <Ionicons
-                            name={isAudioEnabled ? 'volume-high' : 'volume-mute'}
-                            size={20}
-                            color={isAudioEnabled ? '#fff' : colors.iconSecondary}
-                          />
-                        </Pressable>
-                      )}
-                    </>
-                  ) : (
-                    <View style={[styles.statusBadge, { backgroundColor: '#f59e0b20' }]}>
-                      <Ionicons name="ellipse" size={10} color="#f59e0b" />
-                      <ThemedText style={[styles.statusBadgeText, { color: '#f59e0b' }]}>
-                        Ongoing
-                      </ThemedText>
-                    </View>
-                  )}
-                </View>
-              )}
-              {job.status === 'completed' && (
-                <View style={[styles.statusBadge, { backgroundColor: colors.success + '20' }]}>
-                  <Ionicons name="checkmark-circle" size={16} color={colors.success} />
-                  <ThemedText style={[styles.statusBadgeText, { color: colors.success }]}>
-                    Completed
-                  </ThemedText>
-                </View>
-              )}
-            </View>
-          )}
+                          {isCompletingJob ? 'Processing...' : 'Stop'}
+                        </Button>
+                      );
+                    })()}
+                  </View>
+                )}
+                {job.status === 'completed' && (
+                  <View style={[styles.statusBadge, { backgroundColor: colors.success + '20' }]}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <ThemedText style={[styles.statusBadgeText, { color: colors.success }]}>
+                      Completed
+                    </ThemedText>
+                  </View>
+                )}
+              </>
+            ) : (
+              <>
+                {job.status === 'scheduled' && (
+                  <View style={[styles.statusBadge, { backgroundColor: colors.primary + '20' }]}>
+                    <Ionicons name="calendar-outline" size={16} color={colors.primary} />
+                    <ThemedText style={[styles.statusBadgeText, { color: colors.primary }]}>
+                      Scheduled
+                    </ThemedText>
+                  </View>
+                )}
+                {job.status === 'ongoing' && (
+                  <View style={styles.liveStatusContainer}>
+                    {/* For viewers: show LIVE when receiving cached_turns OR audio */}
+                    {/* For assigned users: show LIVE when recording */}
+                    {((!isAssignedToJob && (isReceivingTurns || isReceivingAudio)) || (isAssignedToJob && isRecording)) ? (
+                      <>
+                        <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420' }]}>
+                          <View style={styles.liveDot} />
+                          <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
+                            LIVE
+                          </ThemedText>
+                        </View>
+                        {/* Audio toggle for viewers when receiving audio */}
+                        {!isAssignedToJob && isReceivingAudio && (
+                          <Pressable
+                            onPress={toggleAudio}
+                            style={[
+                              styles.audioToggle,
+                              {
+                                backgroundColor: isAudioEnabled ? colors.primary : colors.backgroundSecondary,
+                              },
+                            ]}
+                          >
+                            <Ionicons
+                              name={isAudioEnabled ? 'volume-high' : 'volume-mute'}
+                              size={20}
+                              color={isAudioEnabled ? '#fff' : colors.iconSecondary}
+                            />
+                          </Pressable>
+                        )}
+                      </>
+                    ) : (
+                      <View style={[styles.statusBadge, { backgroundColor: '#f59e0b20' }]}>
+                        <Ionicons name="ellipse" size={10} color="#f59e0b" />
+                        <ThemedText style={[styles.statusBadgeText, { color: '#f59e0b' }]}>
+                          Ongoing
+                        </ThemedText>
+                      </View>
+                    )}
+                  </View>
+                )}
+                {job.status === 'completed' && (
+                  <View style={[styles.statusBadge, { backgroundColor: colors.success + '20' }]}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <ThemedText style={[styles.statusBadgeText, { color: colors.success }]}>
+                      Completed
+                    </ThemedText>
+                  </View>
+                )}
+              </>
+            )}
+          </View>
         </View>
 
         {/* Icon-Only Tab Navigation */}
@@ -1521,7 +1529,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerRight: {
-    paddingTop: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   actionButtonRow: {
     flexDirection: 'row',

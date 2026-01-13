@@ -14,6 +14,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAudioPlayer } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import { useSettingsStore } from '@/store/useSettingsStore';
 
 interface AudioQueueItem {
   text: string;
@@ -28,8 +29,7 @@ const normalizeChunk = (input: string) => {
     .replace(/\*\*/g, ' ') // bold markers
     .replace(/__|`/g, ' ') // underline/code markers
     .replace(/^\s*#+\s+/gm, ' ') // headings (keep line, drop markdown)
-    .replace(/^\s*[-*]\s+/gm, ' ') // bullet prefixes (keep line, drop markdown)
-    .trimStart();
+    .replace(/^\s*[-*]\s+/gm, ' '); // bullet prefixes (keep line, drop markdown)
 };
 
 const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
@@ -47,6 +47,8 @@ export function useStreamingTTS() {
   const playingUriRef = useRef<string | null>(null);
   const playNextRef = useRef<(() => void) | undefined>(undefined);
   const isProcessingNextRef = useRef(false); // Lock to prevent concurrent playNext calls
+
+  const { isTTSEnabled } = useSettingsStore();
 
   // Create ONE player instance that stays alive
   // Use empty source initially, we'll use replace() to change the source
@@ -137,7 +139,7 @@ export function useStreamingTTS() {
   }, [player]);
 
   const generateAudio = useCallback(async (item: AudioQueueItem) => {
-    if (item.audioUri) return; // Already generated
+    if (item.audioUri || !isTTSEnabled) return; // Already generated or TTS disabled
 
     try {
       setIsLoading(true);
@@ -222,7 +224,7 @@ export function useStreamingTTS() {
       console.error('[useStreamingTTS] Error generating audio:', error);
       setIsLoading(false);
     }
-  }, []);
+  }, [isTTSEnabled]);
 
   const playNext = useCallback(() => {
     // Already playing - will be called when current finishes
@@ -327,6 +329,11 @@ export function useStreamingTTS() {
   playNextRef.current = playNext;
 
   const flushBufferedText = useCallback(() => {
+    if (!isTTSEnabled) {
+      textBufferRef.current = '';
+      return;
+    }
+
     if (bufferTimeoutRef.current) {
       clearTimeout(bufferTimeoutRef.current);
       bufferTimeoutRef.current = null;
@@ -344,9 +351,14 @@ export function useStreamingTTS() {
       // Start generating audio immediately in parallel
       generateAudio(newItem);
     }
-  }, [generateAudio]);
+  }, [generateAudio, isTTSEnabled]);
 
   const addToQueue = useCallback((text: string) => {
+    // If TTS is disabled, don't do anything
+    if (!isTTSEnabled) {
+      return;
+    }
+
     // Immediately reflect that speech is pending so the stop button appears without delay
     setIsSpeaking(true);
     
@@ -388,7 +400,7 @@ export function useStreamingTTS() {
         flushBufferedText();
       }, FLUSH_TIMEOUT_MS);
     }
-  }, [flushBufferedText]);
+  }, [flushBufferedText, isTTSEnabled]);
 
   const flush = useCallback(() => {
     // Flush any remaining text in buffer
@@ -434,6 +446,13 @@ export function useStreamingTTS() {
     setIsSpeaking(false);
     setIsLoading(false);
   }, [player]);
+
+  // Stop TTS immediately if it's disabled while speaking
+  useEffect(() => {
+    if (!isTTSEnabled && isSpeaking) {
+      stop();
+    }
+  }, [isTTSEnabled, isSpeaking, stop]);
 
   // Cleanup on unmount
   useEffect(() => {
