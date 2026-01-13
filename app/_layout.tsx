@@ -1,5 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments, useLocalSearchParams } from 'expo-router';
+import { Stack, useRouter, useSegments, useLocalSearchParams, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Linking from 'expo-linking';
 import 'react-native-reanimated';
@@ -23,19 +23,38 @@ export const unstable_settings = {
 };
 
 // Component to track screen views for expo-router (must be inside PostHogProvider)
-// As per PostHog docs: https://posthog.com/docs/libraries/react-native#with-expo-router
+// As per Expo Router docs: https://docs.expo.dev/router/reference/screen-tracking/
+// and PostHog docs: https://posthog.com/docs/libraries/react-native#with-expo-router
 function ScreenTracker() {
-  const segments = useSegments();
+  const pathname = usePathname();
+  const params = useGlobalSearchParams();
   const posthog = usePostHog();
 
   useEffect(() => {
     if (!posthog || typeof posthog?.screen !== 'function') return;
 
-    // Track screen view when route changes (as per PostHog docs for expo-router)
-    const currentPath = segments.join('/') || '(tabs)';
-    const screenName = currentPath || 'Home';
+    // Track screen view with actual pathname (e.g., 'jobs/123' instead of 'jobs/[id]')
+    // pathname includes resolved dynamic segments
+    // For job detail pages, include tab parameter (default to 'askAI' if not present)
+    let screenName = pathname || '(tabs)';
+    
+    // If we're on a job detail page, append tab to the screen name
+    if (pathname?.startsWith('/jobs/') && pathname !== '/jobs' && pathname !== '/jobs/') {
+      const validTabs = ['transcription', 'askAI', 'checklist', 'insights'];
+      const tabParam = params.tab && typeof params.tab === 'string' ? params.tab : 'askAI';
+      
+      // Only append if it's a valid tab (default to 'askAI' to match job detail page default)
+      if (validTabs.includes(tabParam)) {
+        screenName = `${pathname}/${tabParam}`;
+      }
+    }
+    
     posthog.screen(screenName);
-  }, [segments, posthog]);
+    
+    if (__DEV__) {
+      console.log('[ScreenTracker] Screen tracked:', screenName, params);
+    }
+  }, [pathname, params, posthog]);
 
   return null;
 }

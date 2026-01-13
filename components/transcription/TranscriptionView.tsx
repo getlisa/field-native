@@ -11,6 +11,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
 import { jobService, type TranscriptionTurn } from '@/services/jobService';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
+import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 
 interface WordTimestamp {
   word: string;
@@ -468,12 +469,27 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     if (!audioReady || !player) return;
 
     try {
+      const isPausing = localPlayingState;
       if (localPlayingState) {
         player.pause();
         setLocalPlayingState(false);
       } else {
         player.play();
         setLocalPlayingState(true);
+      }
+
+      // Track audio play/pause events separately
+      if (posthog) {
+        const companyId = getCompanyIdForTracking();
+        if (isPausing) {
+          posthog.capture(PostHogEvents.TRANSCRIPTION_AUDIO_PAUSED, {
+            ...(companyId !== undefined && { company_id: companyId }),
+          });
+        } else {
+          posthog.capture(PostHogEvents.TRANSCRIPTION_AUDIO_PLAYED, {
+            ...(companyId !== undefined && { company_id: companyId }),
+          });
+        }
       }
     } catch (err) {
       console.error('[TranscriptionView] Error toggling play/pause:', err);

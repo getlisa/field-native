@@ -1,13 +1,28 @@
 import PostHog from 'posthog-react-native';
 import { config } from './config';
 
-// Create PostHog instance - can be used with or without PostHogProvider
-// If PostHog is not enabled, export null
-export const posthog: PostHog | null = config.posthog.isEnabled && config.posthog.apiKey
-  ? new PostHog(config.posthog.apiKey, {
-      host: config.posthog.host,
-    })
-  : null;
+// Lazy initialization with try-catch to handle SSR/web bundling
+// PostHog uses AsyncStorage which requires window object (not available during SSR)
+let posthogInstance: PostHog | null = null;
+
+try {
+  if (config.posthog.isEnabled && config.posthog.apiKey) {
+    // Only initialize in native environments (not web/SSR)
+    // Check for window to ensure we're not in Node.js/SSR environment
+    if (typeof window !== 'undefined') {
+      posthogInstance = new PostHog(config.posthog.apiKey, {
+        host: config.posthog.host,
+      });
+    }
+  }
+} catch (error) {
+  // Silently fail during SSR/bundling - PostHog is optional
+  if (__DEV__) {
+    console.warn('[PostHog] Initialization skipped:', error);
+  }
+}
+
+export const posthog: PostHog | null = posthogInstance;
 
 /**
  * PostHog event names - centralized for consistency and easier tracking
@@ -28,6 +43,20 @@ export const PostHogEvents = {
   
   // Recording events
   RECORDING_STOPPED: 'recording_stopped',
+  
+  // Transcription audio playback events
+  TRANSCRIPTION_AUDIO_PLAY_PAUSE: 'transcription_audio_play_pause',
+  TRANSCRIPTION_AUDIO_PLAYED: 'transcription_audio_played',
+  TRANSCRIPTION_AUDIO_PAUSED: 'transcription_audio_paused',
+  
+  // Chat input events
+  CHAT_VOICE_INPUT_PRESSED: 'chat_voice_input_pressed',
+  CHAT_VOICE_RECORDING_STARTED: 'chat_voice_recording_started',
+  CHAT_VOICE_RECORDING_STOPPED: 'chat_voice_recording_stopped',
+  CHAT_AGENT_RESPONSE_STOPPED: 'chat_agent_response_stopped',
+  CHAT_GALLERY_OPENED: 'chat_gallery_opened',
+  CHAT_CAMERA_OPENED: 'chat_camera_opened',
+  CHAT_MESSAGE_SENT: 'chat_message_sent',
   
   // Authentication events
   USER_LOGGED_IN: 'user_logged_in',

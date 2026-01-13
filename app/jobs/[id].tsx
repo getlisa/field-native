@@ -71,6 +71,10 @@ export default function JobDetailPage() {
     return 'askAI';
   });
   
+  // Track if we've already tracked the initial mount to prevent double-tracking with root layout
+  const hasTrackedInitialMountRef = useRef<string | null>(null);
+  const previousTabRef = useRef<TabKey | null>(null);
+
   // Update activeTab when tab param changes (for navigation from notifications)
   useEffect(() => {
     if (tab && ['transcription', 'askAI', 'checklist', 'insights'].includes(tab)) {
@@ -80,6 +84,37 @@ export default function JobDetailPage() {
       setActiveTab(tab as TabKey);
     }
   }, [tab]);
+
+  // Reset tracking refs when job ID changes (navigating to different job)
+  useEffect(() => {
+    if (id && hasTrackedInitialMountRef.current !== id) {
+      hasTrackedInitialMountRef.current = id;
+      previousTabRef.current = activeTab;
+    }
+  }, [id, activeTab]);
+
+  // Track screen view when tab changes (only for state-based tab changes, not initial mount)
+  // Root layout handles route-level tracking (including tab if in URL), this handles tab-level tracking for state changes
+  useEffect(() => {
+    if (!posthog || typeof posthog?.screen !== 'function' || !id) return;
+
+    // Skip tracking on initial mount for this job - root layout will handle that
+    if (hasTrackedInitialMountRef.current !== id) {
+      return;
+    }
+
+    // Only track if tab actually changed (not just on mount)
+    if (previousTabRef.current !== null && previousTabRef.current !== activeTab) {
+      const screenName = `jobs/${id}/${activeTab}`;
+      posthog.screen(screenName);
+      
+      if (__DEV__) {
+        console.log('[JobDetail] Tab changed, screen tracked:', screenName);
+      }
+    }
+    
+    previousTabRef.current = activeTab;
+  }, [activeTab, id]);
   
   const [actionLoading, setActionLoading] = useState(false);
   const [suppressAutoTranscription, setSuppressAutoTranscription] = useState(false);

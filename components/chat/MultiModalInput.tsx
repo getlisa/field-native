@@ -26,6 +26,7 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { getMediaPicker, type MediaAsset } from '@/lib/media';
 import { useTheme } from '@/contexts/ThemeContext';
+import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 
 // Custom recording options optimized for OpenAI Whisper API compatibility
 // iOS: Uses Linear PCM (WAV) for maximum compatibility
@@ -144,6 +145,18 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   const handleSend = useCallback(() => {
     if (!canSend) return;
+    
+    // Track message sent event
+    if (posthog) {
+      const companyId = getCompanyIdForTracking();
+      const messageType = hasPendingImages ? 'image' : 'text';
+      posthog.capture(PostHogEvents.CHAT_MESSAGE_SENT, {
+        message_type: messageType,
+        has_images: hasPendingImages,
+        ...(companyId !== undefined && { company_id: companyId }),
+      });
+    }
+    
     onSendMessage(textInput.trim(), hasPendingImages ? 'image' : 'text');
     setTextInput('');
   }, [canSend, textInput, hasPendingImages, onSendMessage]);
@@ -431,6 +444,28 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   }, [onVoiceRecorded, onSendMessage, isTranscribingProp, onVoiceRecordingEnd]);
 
   const handleVoicePress = useCallback(() => {
+    // Track events - differentiate between voice input and stopping agent response
+    if (posthog) {
+      const companyId = getCompanyIdForTracking();
+      
+      if (isSpeaking) {
+        // User is stopping the agent's audio response
+        posthog.capture(PostHogEvents.CHAT_AGENT_RESPONSE_STOPPED, {
+          ...(companyId !== undefined && { company_id: companyId }),
+        });
+      } else if (isRecording) {
+        // User is stopping voice recording
+        posthog.capture(PostHogEvents.CHAT_VOICE_RECORDING_STOPPED, {
+          ...(companyId !== undefined && { company_id: companyId }),
+        });
+      } else {
+        // User is starting voice recording
+        posthog.capture(PostHogEvents.CHAT_VOICE_RECORDING_STARTED, {
+          ...(companyId !== undefined && { company_id: companyId }),
+        });
+      }
+    }
+
     if (isSpeaking && onStopSpeaking) {
       onStopSpeaking();
     } else if (isRecording) {
@@ -493,6 +528,14 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // - Android: Uses Intent.ACTION_IMAGE_CAPTURE
   // ─────────────────────────────────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
+    // Track camera opened event
+    if (posthog) {
+      const companyId = getCompanyIdForTracking();
+      posthog.capture(PostHogEvents.CHAT_CAMERA_OPENED, {
+        ...(companyId !== undefined && { company_id: companyId }),
+      });
+    }
+
     // Check if we already have 4 images
     if (pendingImages.length >= 4) {
       Alert.alert(
@@ -543,6 +586,14 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // - Android: Uses Intent.ACTION_PICK or document picker
   // ─────────────────────────────────────────────────────────────────────────────
   const handleGalleryPress = useCallback(async () => {
+    // Track gallery opened event
+    if (posthog) {
+      const companyId = getCompanyIdForTracking();
+      posthog.capture(PostHogEvents.CHAT_GALLERY_OPENED, {
+        ...(companyId !== undefined && { company_id: companyId }),
+      });
+    }
+
     // Check if we already have 4 images
     if (pendingImages.length >= 4) {
       Alert.alert(
