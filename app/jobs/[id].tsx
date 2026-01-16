@@ -42,6 +42,7 @@ import {
 } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
 import { jobService } from '@/services/jobService';
+import authService from '@/services/authService';
 import type { ProactiveSuggestionsMessage } from '@/lib/RealtimeChat';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 
@@ -687,6 +688,30 @@ export default function JobDetailPage() {
     setSuppressAutoTranscription(false);
     setActionLoading(true);
     try {
+      // Check session status before starting job (for long-running operations)
+      const refreshToken = useAuthStore.getState().refresh_token;
+      if (refreshToken) {
+        try {
+          const sessionStatus = await authService.sessionStatus(refreshToken);
+          if (!sessionStatus.policy?.longRunningOperationAllowed) {
+            // Session doesn't allow long-running operations, logout automatically
+            setActionLoading(false);
+            authService.logout();
+            return;
+          }
+        } catch (error) {
+          // If session status check fails, logout automatically
+          setActionLoading(false);
+          authService.logout();
+          return;
+        }
+      } else {
+        // No refresh token available, logout automatically
+        setActionLoading(false);
+        authService.logout();
+        return;
+      }
+
       // Check permissions before starting job
       const permissionService = getPermissionService();
       const permissions = await permissionService.checkAllPermissions();

@@ -26,6 +26,20 @@ export type LoginResponse = {
   };
 };
 
+export type SessionStatusResponse = {
+  authenticated: boolean;
+  access?: {
+    expiresInSeconds: number;
+  };
+  refresh?: {
+    expiresInSeconds: number;
+    requiresReLoginSoon: boolean;
+  };
+  policy?: {
+    longRunningOperationAllowed: boolean;
+  };
+};
+
 const authService = {
   login: async (payload: LoginRequest): Promise<LoginResponse> => {
     const data = await api.post<LoginResponse>('/auth/login', payload, { skipAuth: true });
@@ -71,6 +85,14 @@ const authService = {
   },
 
   getTokens: () => api.getTokens(),
+
+  sessionStatus: async (refreshToken: string): Promise<SessionStatusResponse> => {
+    const response = await api.get<SessionStatusResponse>('/auth/session-status', {
+      params: { refresh_token: refreshToken },
+      skipAuth: true,
+    });
+    return response;
+  },
 };
 
 export default authService;

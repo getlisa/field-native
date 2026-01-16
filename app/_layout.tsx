@@ -1,5 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments, useLocalSearchParams, usePathname, useGlobalSearchParams } from 'expo-router';
+import { Stack, useRouter, useSegments, useLocalSearchParams, usePathname, useGlobalSearchParams, Redirect } from 'expo-router';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Linking from 'expo-linking';
 import 'react-native-reanimated';
@@ -7,12 +7,14 @@ import 'react-native-reanimated';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AuthProvider } from '@/providers/AuthProvider';
+import { useAuth } from '@/hooks/useAuth';
 import { QueryProvider } from '@/providers/QueryProvider';
 import { ThemedStatusBar } from '@/components/ThemedStatusBar';
 import { getNotificationService, initializeNotificationHandler } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
 import { useRecordingStore } from '@/store/useRecordingStore';
 import { config } from '@/lib/config';
+import { useAuthStore } from '@/store/useAuthStore';
 
 // Import PostHog (enabled when EXPO_PUBLIC_POSTHOG_API_KEY is set)
 import { usePostHog, PostHogProvider } from 'posthog-react-native';
@@ -57,6 +59,38 @@ function ScreenTracker() {
   }, [pathname, params, posthog]);
 
   return null;
+}
+
+// Authentication guard component that redirects based on auth status
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  const pathname = usePathname();
+  const hasHydrated = useAuthStore((state) => state._hasHydrated);
+
+  // Wait for store to hydrate before making routing decisions
+  if (!hasHydrated) {
+    return null; // or a loading spinner
+  }
+
+  // Determine if we're on the login page
+  // Login page is at /(tabs)/index or just / or /(tabs)
+  const isLoginPage = 
+    pathname === '/' || 
+    pathname === '/(tabs)' || 
+    pathname === '/(tabs)/' ||
+    pathname === '/(tabs)/index';
+
+  // If not authenticated and not on login page, redirect to login
+  if (!isAuthenticated && !isLoginPage) {
+    return <Redirect href="/" />;
+  }
+
+  // If authenticated and on login page, redirect to jobs
+  if (isAuthenticated && isLoginPage) {
+    return <Redirect href="/(tabs)/jobs" />;
+  }
+
+  return <>{children}</>;
 }
 
 export default function RootLayout() {
@@ -370,21 +404,23 @@ export default function RootLayout() {
       <ThemeProvider>
         <NavigationThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
           <AuthProvider>
-            <Stack>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="jobs/index" options={{ headerShown: false, title: 'Jobs' }} />
-              <Stack.Screen 
-                name="jobs/[id]" 
-                options={{ 
-                  headerShown: false,
-                  // Disable iOS native back button menu for better prevention control
-                  headerBackButtonMenuEnabled: false,
-                }} 
-              />
-              <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-            </Stack>
-            {/* StatusBar that responds to app theme (not system theme) */}
-            <ThemedStatusBar />
+            <AuthGuard>
+              <Stack>
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="jobs/index" options={{ headerShown: false, title: 'Jobs' }} />
+                <Stack.Screen 
+                  name="jobs/[id]" 
+                  options={{ 
+                    headerShown: false,
+                    // Disable iOS native back button menu for better prevention control
+                    headerBackButtonMenuEnabled: false,
+                  }} 
+                />
+                <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+              </Stack>
+              {/* StatusBar that responds to app theme (not system theme) */}
+              <ThemedStatusBar />
+            </AuthGuard>
           </AuthProvider>
         </NavigationThemeProvider>
       </ThemeProvider>

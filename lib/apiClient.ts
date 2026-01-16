@@ -138,6 +138,7 @@ const refreshAccessToken = async () => {
   const apiResponse: ApiResponse<any> = response.data;
   if (apiResponse.error) {
     clearTokens();
+    useAuthStore.getState().logout();
     throw apiResponse.error;
   }
   extractTokens(apiResponse.data ?? apiResponse);
@@ -187,7 +188,8 @@ apiClient.interceptors.response.use(
 
       if (!tokens.refreshToken) {
         clearTokens();
-        return Promise.reject(error);
+        useAuthStore.getState().logout();
+        return Promise.reject(formatError(error));
       }
 
       if (isRefreshing) {
@@ -217,7 +219,12 @@ apiClient.interceptors.response.use(
       } catch (refreshError) {
         processQueue(refreshError, null);
         clearTokens();
-        return Promise.reject(refreshError);
+        useAuthStore.getState().logout();
+        // Handle both ApiError and AxiosError
+        const formattedError = (refreshError as any).status !== undefined 
+          ? refreshError 
+          : formatError(refreshError as AxiosError);
+        return Promise.reject(formattedError);
       } finally {
         isRefreshing = false;
       }

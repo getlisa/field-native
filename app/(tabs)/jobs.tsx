@@ -17,7 +17,7 @@ import { Spacing, FontSizes } from '@/constants/theme';
 export default function JobsTab() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { isAuthenticated, companyId: authedCompanyId, user } = useAuth();
+  const { companyId: authedCompanyId, user } = useAuth();
   const { jobs, error, loading, fetchJobs } = useJobs();
   
   // Store current filter state to persist across refreshes
@@ -59,23 +59,6 @@ export default function JobsTab() {
       fetchJobs(authedCompanyId, filtersToUse);
     }
   }, [authedCompanyId, fetchJobs, currentFilters]);
-
-  // Not authenticated state
-  if (!isAuthenticated) {
-    return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        <View style={styles.centeredContent}>
-          <Ionicons name="lock-closed-outline" size={64} color={colors.textTertiary} />
-          <ThemedText type="subtitle" style={[styles.messageTitle, { color: colors.text }]}>
-            Authentication Required
-          </ThemedText>
-          <ThemedText style={[styles.messageText, { color: colors.textSecondary }]}>
-            Please sign in to view your jobs
-          </ThemedText>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
   // Loading state (initial load)
   if (loading && jobs.length === 0) {

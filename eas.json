@@ -13,8 +13,7 @@
       }
     },
     "preview": {
-      "autoIncrement": true,
-      "distribution": "store",
+      "distribution": "internal",
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
