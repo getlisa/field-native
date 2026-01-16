@@ -638,7 +638,7 @@ export const AskAITab: React.FC = () => {
 
   // Render empty state
   const renderEmptyState = () => (
-    <View style={styles.emptyState}>
+    <View style={[styles.emptyState, styles.invertedItem]}>
       <View style={styles.iconContainer}>
         <View style={styles.iconPulse} />
         <View style={styles.iconRing} />
@@ -662,7 +662,7 @@ export const AskAITab: React.FC = () => {
     if (!isLoading && !isSpeaking && !isTranscribing) return null;
 
     return (
-      <View style={styles.processingContainer}>
+      <View style={[styles.processingContainer, styles.invertedItem]}>
         <View style={[styles.processingIcon, { backgroundColor: `${colors.primary}15` }]}>
           <ActivityIndicator size="small" color={colors.primary} />
         </View>
@@ -695,7 +695,11 @@ export const AskAITab: React.FC = () => {
   const bottomPadding = Math.max(8, insets.bottom);
 
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => <ChatMessage message={item} />,
+    ({ item }: { item: Message }) => (
+      <View style={styles.invertedItem}>
+        <ChatMessage message={item} />
+      </View>
+    ),
     []
   );
 
@@ -713,15 +717,13 @@ export const AskAITab: React.FC = () => {
 
   const HORIZONTAL_PADDING = 12;
 
-  const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
-
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['left', 'right']}>
       <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Messages Area */}
       <FlatList
         ref={messagesContainerRef}
-        data={invertedMessages}
+        data={messages}
         inverted
         keyExtractor={keyExtractor}
         renderItem={renderItem}
@@ -784,6 +786,9 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
+  },
+  invertedItem: {
+    transform: [{ scaleY: -1 }],
   },
   messagesList: {
     flexGrow: 1,
