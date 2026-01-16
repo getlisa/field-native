@@ -40,8 +40,12 @@ import type { MediaAsset } from '@/lib/media';
 import type { Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
-export const AskAITab: React.FC = () => {
-  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
+type AskAITabProps = {
+  isActive?: boolean;
+};
+
+export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
+  const { job, jobId, canUseAskAI, proactiveMessages, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -203,6 +207,19 @@ export const AskAITab: React.FC = () => {
       isMounted = false;
     };
   }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
+
+  // Merge proactive suggestions + checklist updates into messages
+  useEffect(() => {
+    if (!proactiveMessages?.length) return;
+    setMessages((prev) => {
+      const existingIds = new Set(prev.map((msg) => msg.id));
+      const newOnes = proactiveMessages.filter((msg) => !existingIds.has(msg.id));
+      if (!newOnes.length) return prev;
+      const merged = [...prev, ...newOnes];
+      merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      return merged;
+    });
+  }, [proactiveMessages]);
 
   /**
    * Main message handler - supports text, voice, and images
@@ -638,7 +655,7 @@ export const AskAITab: React.FC = () => {
 
   // Render empty state
   const renderEmptyState = () => (
-    <View style={[styles.emptyState, styles.invertedItem]}>
+    <View style={styles.emptyState}>
       <View style={styles.iconContainer}>
         <View style={styles.iconPulse} />
         <View style={styles.iconRing} />
@@ -662,7 +679,7 @@ export const AskAITab: React.FC = () => {
     if (!isLoading && !isSpeaking && !isTranscribing) return null;
 
     return (
-      <View style={[styles.processingContainer, styles.invertedItem]}>
+      <View style={styles.processingContainer}>
         <View style={[styles.processingIcon, { backgroundColor: `${colors.primary}15` }]}>
           <ActivityIndicator size="small" color={colors.primary} />
         </View>
@@ -695,11 +712,7 @@ export const AskAITab: React.FC = () => {
   const bottomPadding = Math.max(8, insets.bottom);
 
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => (
-      <View style={styles.invertedItem}>
-        <ChatMessage message={item} />
-      </View>
-    ),
+    ({ item }: { item: Message }) => <ChatMessage message={item} />,
     []
   );
 
@@ -715,6 +728,41 @@ export const AskAITab: React.FC = () => {
     [isLoading, isTranscribing, isSpeaking, isUploadingImages]
   );
 
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Scroll to the latest message (debounced for smoother animation)
+  const scrollToLatestMessage = useCallback((animated: boolean = true) => {
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+    }
+    scrollTimeoutRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        messagesContainerRef.current?.scrollToEnd({ animated });
+      });
+    }, 80);
+  }, []);
+
+  // Scroll to latest message when messages change
+  useEffect(() => {
+    if (messages.length === 0) return;
+    scrollToLatestMessage(true);
+  }, [messages.length, scrollToLatestMessage]);
+
+  // Ensure we jump to the latest when the tab becomes active
+  useEffect(() => {
+    if (!isActive || messages.length === 0) return;
+    scrollToLatestMessage(true);
+  }, [isActive, messages.length, scrollToLatestMessage]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+        scrollTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   const HORIZONTAL_PADDING = 12;
 
   return (
@@ -724,7 +772,6 @@ export const AskAITab: React.FC = () => {
       <FlatList
         ref={messagesContainerRef}
         data={messages}
-        inverted
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         extraData={listExtraData}
@@ -733,9 +780,12 @@ export const AskAITab: React.FC = () => {
         initialNumToRender={12}
         removeClippedSubviews
         ListEmptyComponent={isFetchingHistory ? <ActivityIndicator /> : renderEmptyState}
-        ListHeaderComponent={renderProcessingIndicator}
+        ListFooterComponent={renderProcessingIndicator}
         contentContainerStyle={[styles.messagesList, { paddingHorizontal: HORIZONTAL_PADDING }]}
         showsVerticalScrollIndicator={false}
+        onContentSizeChange={() => {
+          if (isActive) scrollToLatestMessage(true);
+        }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       />
@@ -786,9 +836,6 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-  },
-  invertedItem: {
-    transform: [{ scaleY: -1 }],
   },
   messagesList: {
     flexGrow: 1,

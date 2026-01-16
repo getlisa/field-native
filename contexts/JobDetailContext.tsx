@@ -1,6 +1,7 @@
 import React, { createContext, useContext, ReactNode } from 'react';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
 import type { Job } from '@/services/jobService';
+import type { Message } from '@/components/chat/types';
 
 type TabKey = 'transcription' | 'askAI' | 'checklist' | 'insights';
 
@@ -25,6 +26,7 @@ interface JobDetailContextValue {
   transcriptionScrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>; // For auto-scroll
   isLoadingDbTurns?: boolean; // Loading state for DB turns
   setActiveTab?: (tab: TabKey) => void; // For navigating between tabs
+  proactiveMessages?: Message[]; // Proactive suggestions + checklist updates
 }
 
 const JobDetailContext = createContext<JobDetailContextValue | undefined>(undefined);
