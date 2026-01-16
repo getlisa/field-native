@@ -40,11 +40,7 @@ import type { MediaAsset } from '@/lib/media';
 import type { Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
-type AskAITabProps = {
-  isActive?: boolean;
-};
-
-export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
+export const AskAITab: React.FC = () => {
   const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
@@ -152,6 +148,13 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
     }
   }, [conversationId, jobId, user?.id]);
 
+  // Scroll to the latest message
+  const scrollToLatestMessage = useCallback((animated: boolean = true) => {
+    requestAnimationFrame(() => {
+      messagesContainerRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
   // Map API messages to UI messages
   const mapCopilotMessageToUi = useCallback((msg: CopilotMessage): Message => {
     return {
@@ -191,6 +194,7 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
 
         if (isMounted) {
           setMessages(history);
+          scrollToLatestMessage(false);
         }
       } catch (e) {
         console.warn('[AskAI] Failed to load chat history', e);
@@ -206,42 +210,13 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
     return () => {
       isMounted = false;
     };
-  }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
+  }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, scrollToLatestMessage, user?.id]);
 
-  const pollDbProactiveMessages = useCallback(async () => {
-    if (!jobId || !user?.id || !isAllowed) return;
-    try {
-      const res = await copilotChatService.getConversationFull(jobId);
-      const dbMessages = (res.data?.messages || [])
-        .map(mapCopilotMessageToUi)
-        .filter(
-          (msg) =>
-            msg.metadata?.type === 'proactive_suggestion' ||
-            msg.metadata?.type === 'checklist_update'
-        );
-
-      if (!dbMessages.length) return;
-
-      setMessages((prev) => {
-        const existingIds = new Set(prev.map((msg) => msg.id));
-        const newOnes = dbMessages.filter((msg) => !existingIds.has(msg.id));
-        if (!newOnes.length) return prev;
-        const merged = [...prev, ...newOnes];
-        merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-        return merged;
-      });
-    } catch (error) {
-      console.warn('[AskAI] Failed to poll proactive/checklist messages', error);
-    }
-  }, [isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
-
-  // Poll database for proactive/checklist messages while AskAI tab is active
+  // Scroll to latest message when messages change
   useEffect(() => {
-    if (!isActive) return;
-    pollDbProactiveMessages();
-    const interval = setInterval(pollDbProactiveMessages, 5000);
-    return () => clearInterval(interval);
-  }, [isActive, pollDbProactiveMessages]);
+    if (messages.length === 0) return;
+    scrollToLatestMessage();
+  }, [messages.length, scrollToLatestMessage]);
 
   /**
    * Main message handler - supports text, voice, and images
@@ -770,6 +745,8 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
         ListFooterComponent={renderProcessingIndicator}
         contentContainerStyle={[styles.messagesList, { paddingHorizontal: HORIZONTAL_PADDING }]}
         showsVerticalScrollIndicator={false}
+        onContentSizeChange={() => scrollToLatestMessage(false)}
+        onLayout={() => scrollToLatestMessage(false)}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       />
