@@ -34,7 +34,6 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useRecordingStore } from '@/store/useRecordingStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import type { DialogueTurn } from '@/lib/RealtimeChat';
-import type { Message } from '@/components/chat/types';
 import { BorderRadius, FontSizes, Spacing } from '@/constants/theme';
 import {
   getNotificationService,
@@ -196,13 +195,6 @@ export default function JobDetailPage() {
   const resumeTranscription = useRecordingStore((state) => state.resumeTranscription);
   const setApiTurns = useRecordingStore((state) => state.setApiTurns);
 
-  const [proactiveMessages, setProactiveMessages] = useState<Message[]>([]);
-
-  // Reset proactive messages when job changes
-  useEffect(() => {
-    setProactiveMessages([]);
-  }, [id]);
-
   // Handle proactive suggestions callback
   const handleProactiveSuggestions = useCallback((suggestions: ProactiveSuggestionsMessage) => {
       if (__DEV__) {
@@ -212,44 +204,6 @@ export default function JobDetailPage() {
           appState: appState.current,
           isAssignedToJob,
           hasJob: !!job,
-        });
-      }
-
-      // Convert proactive suggestions into AskAI messages
-      const timestamp = suggestions.timestamp ? new Date(suggestions.timestamp) : new Date();
-      const nextMessages: Message[] = [];
-
-      suggestions.missedOpportunities?.forEach((missed) => {
-        nextMessages.push({
-          id: `proactive-${suggestions.timestamp}-${missed.itemId}`,
-          role: 'assistant',
-          content: `💡 ${missed.suggestion}`,
-          timestamp,
-          metadata: {
-            type: 'proactive_suggestion',
-            itemId: missed.itemId,
-          },
-        });
-      });
-
-      if (suggestions.updatedChecklistItemIds?.length) {
-        nextMessages.push({
-          id: `checklist-${suggestions.timestamp}-${suggestions.updatedChecklistItemIds.join('-')}`,
-          role: 'assistant',
-          content: 'Checklist items detected.',
-          timestamp,
-          metadata: {
-            type: 'checklist_update',
-            itemIds: suggestions.updatedChecklistItemIds,
-          },
-        });
-      }
-
-      if (nextMessages.length) {
-        setProactiveMessages((prev) => {
-          const existingIds = new Set(prev.map((msg) => msg.id));
-          const deduped = nextMessages.filter((msg) => !existingIds.has(msg.id));
-          return deduped.length ? [...prev, ...deduped] : prev;
         });
       }
 
@@ -1161,7 +1115,6 @@ export default function JobDetailPage() {
       transcriptionScrollRef, // Add scroll ref for auto-scroll
       isLoadingDbTurns, // Add loading state for DB turns
       setActiveTab, // Add setActiveTab for navigation
-      proactiveMessages,
     }),
     [
       job,
@@ -1179,7 +1132,6 @@ export default function JobDetailPage() {
       visitSession?.id,
       isLoadingDbTurns,
       setActiveTab,
-      proactiveMessages,
     ]
   );
 
@@ -1245,7 +1197,7 @@ export default function JobDetailPage() {
       case 'transcription':
         return <TranscriptionTab />;
       case 'askAI':
-        return <AskAITab isActive={activeTab === 'askAI'} />;
+        return <AskAITab />;
       case 'checklist':
         return <ConversationChecklistTab />;
       case 'insights':

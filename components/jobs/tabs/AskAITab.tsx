@@ -45,7 +45,7 @@ type AskAITabProps = {
 };
 
 export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
-  const { job, jobId, canUseAskAI, proactiveMessages, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
+  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -208,18 +208,40 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
     };
   }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
 
-  // Merge proactive suggestions + checklist updates into messages
+  const pollDbProactiveMessages = useCallback(async () => {
+    if (!jobId || !user?.id || !isAllowed) return;
+    try {
+      const res = await copilotChatService.getConversationFull(jobId);
+      const dbMessages = (res.data?.messages || [])
+        .map(mapCopilotMessageToUi)
+        .filter(
+          (msg) =>
+            msg.metadata?.type === 'proactive_suggestion' ||
+            msg.metadata?.type === 'checklist_update'
+        );
+
+      if (!dbMessages.length) return;
+
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((msg) => msg.id));
+        const newOnes = dbMessages.filter((msg) => !existingIds.has(msg.id));
+        if (!newOnes.length) return prev;
+        const merged = [...prev, ...newOnes];
+        merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        return merged;
+      });
+    } catch (error) {
+      console.warn('[AskAI] Failed to poll proactive/checklist messages', error);
+    }
+  }, [isAllowed, jobId, mapCopilotMessageToUi, user?.id]);
+
+  // Poll database for proactive/checklist messages while AskAI tab is active
   useEffect(() => {
-    if (!proactiveMessages?.length) return;
-    setMessages((prev) => {
-      const existingIds = new Set(prev.map((msg) => msg.id));
-      const newOnes = proactiveMessages.filter((msg) => !existingIds.has(msg.id));
-      if (!newOnes.length) return prev;
-      const merged = [...prev, ...newOnes];
-      merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      return merged;
-    });
-  }, [proactiveMessages]);
+    if (!isActive) return;
+    pollDbProactiveMessages();
+    const interval = setInterval(pollDbProactiveMessages, 5000);
+    return () => clearInterval(interval);
+  }, [isActive, pollDbProactiveMessages]);
 
   /**
    * Main message handler - supports text, voice, and images
@@ -728,41 +750,6 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
     [isLoading, isTranscribing, isSpeaking, isUploadingImages]
   );
 
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Scroll to the latest message (debounced for smoother animation)
-  const scrollToLatestMessage = useCallback((animated: boolean = true) => {
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current);
-    }
-    scrollTimeoutRef.current = setTimeout(() => {
-      requestAnimationFrame(() => {
-        messagesContainerRef.current?.scrollToEnd({ animated });
-      });
-    }, 80);
-  }, []);
-
-  // Scroll to latest message when messages change
-  useEffect(() => {
-    if (messages.length === 0) return;
-    scrollToLatestMessage(true);
-  }, [messages.length, scrollToLatestMessage]);
-
-  // Ensure we jump to the latest when the tab becomes active
-  useEffect(() => {
-    if (!isActive || messages.length === 0) return;
-    scrollToLatestMessage(true);
-  }, [isActive, messages.length, scrollToLatestMessage]);
-
-  useEffect(() => {
-    return () => {
-      if (scrollTimeoutRef.current) {
-        clearTimeout(scrollTimeoutRef.current);
-        scrollTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
   const HORIZONTAL_PADDING = 12;
 
   return (
@@ -783,9 +770,6 @@ export const AskAITab: React.FC<AskAITabProps> = ({ isActive = true }) => {
         ListFooterComponent={renderProcessingIndicator}
         contentContainerStyle={[styles.messagesList, { paddingHorizontal: HORIZONTAL_PADDING }]}
         showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => {
-          if (isActive) scrollToLatestMessage(true);
-        }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       />
