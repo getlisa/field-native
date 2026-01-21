@@ -64,9 +64,48 @@ export function useStreamingTTS() {
       try {
         if (!player) return;
         
-        const isPlaying = player.playing ?? false;
-        const currentPosition = player.currentTime ?? 0;
-        const duration = player.duration ?? 0;
+        // Safely access player properties - handle invalidation gracefully
+        let isPlaying = false;
+        let currentPosition = 0;
+        let duration = 0;
+        
+        try {
+          isPlaying = player.playing ?? false;
+          currentPosition = player.currentTime ?? 0;
+          duration = player.duration ?? 0;
+        } catch (playerError: any) {
+          // Player object was invalidated (e.g., during audio session interruption)
+          const errorMsg = playerError?.message || String(playerError);
+          if (errorMsg.includes('released') || errorMsg.includes('cast') || errorMsg.includes('NativeSharedObject')) {
+            if (__DEV__) {
+              console.log('[useStreamingTTS] Player invalidated during status check (likely due to audio session change)');
+            }
+            // If we were playing, mark as finished and try to continue with next chunk
+            if (isPlayingRef.current && playingUriRef.current) {
+              console.log('[useStreamingTTS] Player invalidated mid-playback, treating as finished');
+              // Clean up current file
+              FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
+              playingUriRef.current = null;
+              
+              isPlayingRef.current = false;
+              isProcessingNextRef.current = false;
+              lastPositionRef.current = 0;
+              positionStuckCountRef.current = 0;
+              
+              // Check if there are more items in queue
+              if (queueRef.current.length > 0) {
+                console.log('[useStreamingTTS] More chunks in queue, will attempt to play next');
+                setTimeout(() => playNextRef.current?.(), 100);
+              } else {
+                console.log('[useStreamingTTS] No more chunks, stopping');
+                setIsSpeaking(false);
+              }
+            }
+            return; // Exit early, player is invalid
+          } else {
+            throw playerError; // Re-throw if it's a different error
+          }
+        }
         
         // Update playing state when playback starts
         if (isPlaying && !isPlayingRef.current) {
@@ -289,8 +328,29 @@ export function useStreamingTTS() {
       setTimeout(() => {
         try {
           if (player) {
-            player.play();
-            console.log('[useStreamingTTS] Audio playback started successfully');
+            // Check if player is still valid before playing
+            try {
+              player.play();
+              console.log('[useStreamingTTS] Audio playback started successfully');
+            } catch (playError: any) {
+              // Handle player invalidation during play()
+              const errorMsg = playError?.message || String(playError);
+              if (errorMsg.includes('released') || errorMsg.includes('cast') || errorMsg.includes('NativeSharedObject') || errorMsg.includes('Cannot use shared object')) {
+                if (__DEV__) {
+                  console.warn('[useStreamingTTS] Player invalidated during play() (likely due to audio session change), will retry next chunk');
+                }
+                isPlayingRef.current = false;
+                isProcessingNextRef.current = false;
+                if (playingUriRef.current) {
+                  FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
+                  playingUriRef.current = null;
+                }
+                // Try next item after delay to allow audio session to stabilize
+                setTimeout(() => playNextRef.current?.(), 200);
+              } else {
+                throw playError; // Re-throw if it's a different error
+              }
+            }
           }
         } catch (error) {
           console.error('[useStreamingTTS] Error starting playback:', error);
@@ -300,28 +360,35 @@ export function useStreamingTTS() {
             FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
             playingUriRef.current = null;
           }
-          // Try next item
-          setTimeout(() => playNextRef.current?.(), 100);
+          // Try next item after delay
+          setTimeout(() => playNextRef.current?.(), 200);
         }
       }, 100);
     } catch (error: any) {
       // Handle case where native player object was invalidated (e.g., audio session reconfigured)
       const errorMsg = error?.message || String(error);
       if (errorMsg.includes('NativeSharedObjectNotFoundException') || 
-          errorMsg.includes('Unable to find the native shared object')) {
-        console.warn('[useStreamingTTS] Player object invalidated (likely due to audio session change), skipping playback');
+          errorMsg.includes('Unable to find the native shared object') ||
+          errorMsg.includes('released') ||
+          errorMsg.includes('cast') ||
+          errorMsg.includes('Cannot use shared object')) {
+        if (__DEV__) {
+          console.warn('[useStreamingTTS] Player object invalidated (likely due to audio session change), will retry next chunk');
+        }
+        // Don't mark as speaking=false yet - we might recover and play next chunk
+        // Just reset playing state and try next item
       } else {
         console.error('[useStreamingTTS] Error replacing audio source:', error);
+        setIsSpeaking(false);
       }
       isPlayingRef.current = false;
       isProcessingNextRef.current = false;
-      setIsSpeaking(false);
       if (playingUriRef.current) {
         FileSystem.deleteAsync(playingUriRef.current, { idempotent: true }).catch(console.error);
         playingUriRef.current = null;
       }
-      // Try next item
-      setTimeout(() => playNextRef.current?.(), 100);
+      // Try next item after a short delay to allow audio session to stabilize
+      setTimeout(() => playNextRef.current?.(), 200);
     }
   }, [player]);
   
@@ -416,12 +483,31 @@ export function useStreamingTTS() {
       bufferTimeoutRef.current = null;
     }
 
-    // Stop current audio
+    // Stop current audio - handle player invalidation gracefully
     try {
-      if (player && player.playing) {
-        player.pause();
+      if (player) {
+        // Check if player is still valid before accessing properties
+        // Player might be invalidated due to audio session changes (e.g., interruptions)
+        try {
+          const isPlaying = player.playing ?? false;
+          if (isPlaying) {
+            player.pause();
+          }
+        } catch (playerError: any) {
+          // Player object was invalidated (e.g., "Cannot use shared object that was already released")
+          // This can happen when audio session is reconfigured during interruptions
+          const errorMsg = playerError?.message || String(playerError);
+          if (errorMsg.includes('released') || errorMsg.includes('cast') || errorMsg.includes('NativeSharedObject')) {
+            if (__DEV__) {
+              console.log('[useStreamingTTS] Player was invalidated (likely due to audio session change), skipping pause');
+            }
+          } else {
+            throw playerError; // Re-throw if it's a different error
+          }
+        }
       }
     } catch (error) {
+      // Fallback error handling for any other errors
       console.warn('[useStreamingTTS] Error pausing player:', error);
     }
 
