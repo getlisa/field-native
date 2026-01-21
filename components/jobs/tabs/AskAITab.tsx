@@ -134,9 +134,21 @@ export const AskAITab: React.FC = () => {
     }
   }, [isSpeaking, isLiveTranscribing, isTranscriptionConnected, pauseTranscription, resumeTranscription]);
 
+  // Reset conversation and messages when jobId changes
+  // This prevents showing messages from previous jobs
+  useEffect(() => {
+    setConversationId(null);
+    setMessages([]);
+    setPendingImages([]);
+    if (__DEV__) {
+      console.log('[AskAI] Job changed - resetting conversation state for jobId:', jobId);
+    }
+  }, [jobId]);
+
   // Ensure conversation exists
   const ensureConversation = useCallback(async () => {
-    if (conversationId) return conversationId;
+    // Don't use cached conversationId - always create/fetch for current jobId
+    // This ensures we never use conversation from wrong job
     if (!jobId || !user?.id) return null;
     try {
       const res = await copilotChatService.createConversation({ userId: String(user.id), jobId });
@@ -146,7 +158,7 @@ export const AskAITab: React.FC = () => {
       console.warn('[AskAI] Failed to create conversation', e);
       return null;
     }
-  }, [conversationId, jobId, user?.id]);
+  }, [jobId, user?.id]);
 
   // Scroll to the latest message
   const scrollToLatestMessage = useCallback((animated: boolean = true) => {

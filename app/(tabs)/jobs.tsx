@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import JobsList from '@/components/jobs/JobsList';
@@ -38,6 +38,29 @@ export default function JobsTab() {
       }
     }, [authedCompanyId, fetchJobs, currentFilters])
   );
+
+  // Handle Android back button - prevent blank screen/crash when on Jobs tab
+  // On tab screens, back button should exit app (tabs are root level)
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      // Check if we can navigate back
+      // If yes, navigate back normally (shouldn't happen on root tab, but handle gracefully)
+      // If no, prevent any navigation and let default behavior exit the app
+      if (router.canGoBack()) {
+        // This shouldn't happen on a root tab, but handle it gracefully
+        router.back();
+        return true; // Prevent default (we handled it)
+      }
+      
+      // On root tab, let default behavior happen (exit app)
+      // Returning false allows the app to exit normally
+      return false;
+    });
+
+    return () => backHandler.remove();
+  }, [router]);
 
   const handleJobPress = useCallback(
     (job: Job) => {

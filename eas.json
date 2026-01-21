@@ -21,7 +21,7 @@
       "android": {
         "buildType": "apk"
       },
-      "environment": "preview"
+      "environment": "production"
     },
     "production": {
       "autoIncrement": true,

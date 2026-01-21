@@ -520,11 +520,11 @@ export default function JobDetailPage() {
     return dbTurns;
   }, [isAssignedToJob, wsTurns, subscriberWsTurns, dbTurns, job?.status]);
   
-  // For viewers: show "live" when receiving cached_turns from WebSocket
+  // For viewers: show "live" when receiving cached_turns OR audio from WebSocket
   // For assigned users: show "live" when connected
   const effectiveIsConnected = isAssignedToJob 
     ? isConnected 
-    : (isSubscriberConnected && isReceivingTurns);
+    : (isSubscriberConnected && (isReceivingTurns || isReceivingAudio));
   const effectiveIsConnecting = isAssignedToJob ? isConnecting : isSubscriberRetrying;
   const effectiveError = isAssignedToJob ? transcriptionError : subscriberError;
 
@@ -579,6 +579,31 @@ export default function JobDetailPage() {
       return () => clearTimeout(timeout);
     }
   }, [lastTurnSignature, job?.status, activeTab, effectiveTurns.length]);
+
+  // Cleanup: Stop audio playback when switching away from transcription tab
+  const previousTabForAudioRef = useRef<TabKey | null>(null);
+  useEffect(() => {
+    // Track previous tab to detect actual tab changes (not initial mount)
+    const previousTab = previousTabForAudioRef.current;
+    previousTabForAudioRef.current = activeTab;
+    
+    // Only stop audio if:
+    // 1. We're a viewer (non-assigned user)
+    // 2. Audio is currently enabled
+    // 3. We're switching away from transcription tab (previous was transcription, current is not)
+    if (
+      !isAssignedToJob &&
+      isAudioEnabled &&
+      previousTab === 'transcription' &&
+      activeTab !== 'transcription' &&
+      toggleAudio
+    ) {
+      if (__DEV__) {
+        console.log('[JobDetail] Switching away from transcription tab - stopping audio playback');
+      }
+      toggleAudio(); // This will disable audio
+    }
+  }, [activeTab, isAssignedToJob, isAudioEnabled, toggleAudio]);
 
   // Remove auto-start transcription - only start when technician clicks start
   // (Removed useEffect that auto-started transcription)
@@ -1140,6 +1165,10 @@ export default function JobDetailPage() {
       transcriptionScrollRef, // Add scroll ref for auto-scroll
       isLoadingDbTurns, // Add loading state for DB turns
       setActiveTab, // Add setActiveTab for navigation
+      // Audio controls for live audio playback (viewers only)
+      isReceivingAudio: !isAssignedToJob ? isReceivingAudio : undefined,
+      isAudioEnabled: !isAssignedToJob ? isAudioEnabled : undefined,
+      toggleAudio: !isAssignedToJob ? toggleAudio : undefined,
     }),
     [
       job,
@@ -1157,6 +1186,9 @@ export default function JobDetailPage() {
       visitSession?.id,
       isLoadingDbTurns,
       setActiveTab,
+      isReceivingAudio,
+      isAudioEnabled,
+      toggleAudio,
     ]
   );
 
@@ -1392,32 +1424,12 @@ export default function JobDetailPage() {
                     {/* For viewers: show LIVE when receiving cached_turns OR audio */}
                     {/* For assigned users: show LIVE when recording */}
                     {((!isAssignedToJob && (isReceivingTurns || isReceivingAudio)) || (isAssignedToJob && isRecording)) ? (
-                      <>
-                        <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420' }]}>
-                          <View style={styles.liveDot} />
-                          <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
-                            LIVE
-                          </ThemedText>
-                        </View>
-                        {/* Audio toggle for viewers when receiving audio */}
-                        {!isAssignedToJob && isReceivingAudio && (
-                          <Pressable
-                            onPress={toggleAudio}
-                            style={[
-                              styles.audioToggle,
-                              {
-                                backgroundColor: isAudioEnabled ? colors.primary : colors.backgroundSecondary,
-                              },
-                            ]}
-                          >
-                            <Ionicons
-                              name={isAudioEnabled ? 'volume-high' : 'volume-mute'}
-                              size={20}
-                              color={isAudioEnabled ? '#fff' : colors.iconSecondary}
-                            />
-                          </Pressable>
-                        )}
-                      </>
+                      <View style={[styles.statusBadge, styles.liveBadge, { backgroundColor: '#ef444420' }]}>
+                        <View style={styles.liveDot} />
+                        <ThemedText style={[styles.statusBadgeText, { color: '#ef4444', fontWeight: '700' }]}>
+                          LIVE
+                        </ThemedText>
+                      </View>
                     ) : (
                       <View style={[styles.statusBadge, { backgroundColor: '#f59e0b20' }]}>
                         <Ionicons name="ellipse" size={10} color="#f59e0b" />

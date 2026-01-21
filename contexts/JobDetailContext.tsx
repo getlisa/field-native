@@ -25,6 +25,10 @@ interface JobDetailContextValue {
   transcriptionScrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>; // For auto-scroll
   isLoadingDbTurns?: boolean; // Loading state for DB turns
   setActiveTab?: (tab: TabKey) => void; // For navigating between tabs
+  // Audio controls for live audio playback (viewers only)
+  isReceivingAudio?: boolean;
+  isAudioEnabled?: boolean;
+  toggleAudio?: () => void;
 }
 
 const JobDetailContext = createContext<JobDetailContextValue | undefined>(undefined);
