@@ -15,6 +15,7 @@ export interface CompanyConfigs {
   id: number;
   company_id: number;
   checklists: ChecklistItem[];
+  sales_coaching_enabled: boolean;
   updated_at: string;
 }
 

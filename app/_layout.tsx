@@ -15,6 +15,8 @@ import { getPermissionService } from '@/services/permissionService';
 import { useRecordingStore } from '@/store/useRecordingStore';
 import { config } from '@/lib/config';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useCompanyConfigsStore } from '@/store/useCompanyConfigsStore';
+import { companyConfigsService } from '@/services/companyConfigsService';
 
 // Import PostHog (enabled when EXPO_PUBLIC_POSTHOG_API_KEY is set)
 import { usePostHog, PostHogProvider } from 'posthog-react-native';
@@ -57,6 +59,54 @@ function ScreenTracker() {
       console.log('[ScreenTracker] Screen tracked:', screenName, params);
     }
   }, [pathname, params, posthog]);
+
+  return null;
+}
+
+// Component to fetch company configs when authenticated
+function CompanyConfigsLoader() {
+  const { isAuthenticated, companyId } = useAuth();
+  const { setConfigs, setLoading, setError } = useCompanyConfigsStore();
+  const hasHydrated = useAuthStore((state) => state._hasHydrated);
+
+  useEffect(() => {
+    // Wait for auth store to hydrate and check if authenticated
+    if (!hasHydrated || !isAuthenticated || !companyId) {
+      // Clear configs if not authenticated
+      if (!isAuthenticated) {
+        useCompanyConfigsStore.getState().clearConfigs();
+      }
+      return;
+    }
+
+    // Fetch company configs
+    const fetchConfigs = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const configs = await companyConfigsService.getCompanyConfigs(Number(companyId));
+        setConfigs(configs);
+        if (__DEV__) {
+          console.log('[CompanyConfigsLoader] Company configs loaded:', configs);
+        }
+      } catch (err: any) {
+        console.error('[CompanyConfigsLoader] Error fetching company configs:', err);
+        setError(err?.message || 'Failed to load company configs');
+        // Set default configs if fetch fails (assume sales_coaching_enabled is false for safety)
+        setConfigs({
+          id: 0,
+          company_id: Number(companyId),
+          checklists: [],
+          sales_coaching_enabled: false,
+          updated_at: new Date().toISOString(),
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchConfigs();
+  }, [isAuthenticated, companyId, hasHydrated, setConfigs, setLoading, setError]);
 
   return null;
 }
@@ -404,6 +454,7 @@ export default function RootLayout() {
       <ThemeProvider>
         <NavigationThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
           <AuthProvider>
+            <CompanyConfigsLoader />
             <AuthGuard>
               <Stack>
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

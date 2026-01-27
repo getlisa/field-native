@@ -26,6 +26,7 @@ import type { User } from '@/store/useAuthStore';
 import { jobService, type CreateJobRequest } from '@/services/jobService';
 import { usersService } from '@/services/usersService';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
+import { useCompanyConfigsStore } from '@/store/useCompanyConfigsStore';
 
 type Props = {
   onRefresh: (filters?: JobFilterOptions) => void;
@@ -55,6 +56,7 @@ interface JobCardProps {
 const JobCard: React.FC<JobCardProps> = ({ job, onPress }) => {
   const { colors } = useTheme();
   const statusConfig = STATUS_CONFIG[job.status];
+  const salesCoachingEnabled = useCompanyConfigsStore((state: { configs: { sales_coaching_enabled?: boolean } | null }) => state.configs?.sales_coaching_enabled ?? false);
 
   return (
     <Card pressable onPress={onPress} style={styles.jobCard}>
@@ -62,9 +64,11 @@ const JobCard: React.FC<JobCardProps> = ({ job, onPress }) => {
         <ThemedText style={styles.jobTitle} numberOfLines={1}>
           {job.job_target_name || 'Untitled job'}
         </ThemedText>
-        <Badge variant={statusConfig.variant} icon={statusConfig.icon} size="sm">
-          {statusConfig.label}
-        </Badge>
+        {salesCoachingEnabled && (
+          <Badge variant={statusConfig.variant} icon={statusConfig.icon} size="sm">
+            {statusConfig.label}
+          </Badge>
+        )}
       </CardHeader>
 
       <CardBody>
@@ -112,6 +116,7 @@ export const JobsList: React.FC<Props> = ({
 }) => {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const salesCoachingEnabled = useCompanyConfigsStore((state: { configs: { sales_coaching_enabled?: boolean } | null }) => state.configs?.sales_coaching_enabled ?? false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<JobStatus | 'all'>('all');
@@ -290,6 +295,17 @@ export const JobsList: React.FC<Props> = ({
   }, []);
 
   const groupedJobs = useMemo(() => {
+    // If sales_coaching_enabled is false, don't group by status - just return all jobs in a single array
+    if (!salesCoachingEnabled) {
+      const sortByDate = (arr: Job[]) =>
+        [...arr].sort((a, b) => new Date(b.start_timestamp).getTime() - new Date(a.start_timestamp).getTime());
+      return {
+        scheduled: [],
+        ongoing: [],
+        completed: sortByDate(filteredJobs), // Put all jobs in completed section (but we won't show section title)
+      };
+    }
+    
     const scheduled = filteredJobs.filter((j) => j.status === 'scheduled');
     const ongoing = filteredJobs.filter((j) => j.status === 'ongoing');
     const completed = filteredJobs.filter((j) => j.status === 'completed');
@@ -301,7 +317,7 @@ export const JobsList: React.FC<Props> = ({
       ongoing: sortByDate(ongoing),
       completed: sortByDate(completed),
     };
-  }, [filteredJobs]);
+  }, [filteredJobs, salesCoachingEnabled]);
 
   const handleSubmit = useCallback(async () => {
     if (!validateForm()) return;
@@ -442,9 +458,18 @@ export const JobsList: React.FC<Props> = ({
           />
         }
       >
-        {renderSection('Upcoming', groupedJobs.scheduled)}
-        {renderSection('Ongoing', groupedJobs.ongoing)}
-        {renderSection('Completed', groupedJobs.completed)}
+        {salesCoachingEnabled ? (
+          <>
+            {renderSection('Upcoming', groupedJobs.scheduled)}
+            {renderSection('Ongoing', groupedJobs.ongoing)}
+            {renderSection('Completed', groupedJobs.completed)}
+          </>
+        ) : (
+          // If sales_coaching_enabled is false, show all jobs without section headers
+          groupedJobs.completed.map((job) => (
+            <JobCard key={job.id} job={job} onPress={onJobPress ? () => onJobPress(job) : undefined} />
+          ))
+        )}
         {!loading && filteredJobs.length === 0 && (
           <View style={styles.emptyContainer}>
             <Ionicons name="cloud-download-outline" size={48} color={colors.iconSecondary} />
@@ -471,32 +496,37 @@ export const JobsList: React.FC<Props> = ({
             <ThemedText type="subtitle" style={styles.modalTitle}>
               Filters
             </ThemedText>
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Status</ThemedText>
-            <View style={styles.statusRow}>
-              {(['all', 'scheduled', 'ongoing', 'completed'] as const).map((statusKey) => (
-                <TouchableOpacity
-                  key={statusKey}
-                  onPress={() => setFilterStatus(statusKey)}
-                  style={[
-                    styles.chip,
-                    {
-                      backgroundColor:
-                        filterStatus === statusKey ? colors.primary : colors.backgroundSecondary,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                >
-                  <ThemedText
-                    style={{
-                      color: filterStatus === statusKey ? '#fff' : colors.text,
-                      fontWeight: '600',
-                    }}
-                  >
-                    {statusKey === 'all' ? 'All' : STATUS_CONFIG[statusKey as JobStatus].label}
-                  </ThemedText>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {/* Only show status filter if sales_coaching_enabled */}
+            {salesCoachingEnabled && (
+              <>
+                <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Status</ThemedText>
+                <View style={styles.statusRow}>
+                  {(['all', 'scheduled', 'ongoing', 'completed'] as const).map((statusKey) => (
+                    <TouchableOpacity
+                      key={statusKey}
+                      onPress={() => setFilterStatus(statusKey)}
+                      style={[
+                        styles.chip,
+                        {
+                          backgroundColor:
+                            filterStatus === statusKey ? colors.primary : colors.backgroundSecondary,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <ThemedText
+                        style={{
+                          color: filterStatus === statusKey ? '#fff' : colors.text,
+                          fontWeight: '600',
+                        }}
+                      >
+                        {statusKey === 'all' ? 'All' : STATUS_CONFIG[statusKey as JobStatus].label}
+                      </ThemedText>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
 
             <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>From Date</ThemedText>
             <TouchableOpacity
