@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Tabs } from 'expo-router';
-import React from 'react';
-import { Platform, StyleSheet } from 'react-native';
+import { Tabs, useRouter, usePathname } from 'expo-router';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import React, { useCallback } from 'react';
+import { Platform, StyleSheet, BackHandler } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -11,6 +12,92 @@ import { Spacing } from '@/constants/theme';
 export default function TabLayout() {
   const { colors, shadows } = useTheme();
   const { isAuthenticated } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+  const navigation = useNavigation();
+
+  // Handle Android back button properly to prevent "addViewAt: failed to insert view" error
+  // This error occurs when React Navigation tries to unmount views while React Native Fabric
+  // is trying to mount new ones, typically when navigation state becomes inconsistent
+  // Solution: Since we're in the tab layout and all tabs are root screens,
+  // just exit the app when back is pressed to prevent view mounting conflicts
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') {
+        // iOS doesn't have hardware back button, no handler needed
+        return;
+      }
+
+      if (__DEV__) {
+        console.log('=== TabLayout focused ===');
+        console.log('pathname:', pathname);
+        console.log('canGoBack:', navigation.canGoBack());
+        console.log('isAuthenticated:', isAuthenticated);
+      }
+
+      const backAction = () => {
+        if (__DEV__) {
+          console.log('=== BACK BUTTON PRESSED ===');
+          console.log('canGoBack:', navigation.canGoBack());
+          console.log('current pathname:', pathname);
+        }
+
+        // If we can go back (e.g., from a nested screen), let React Navigation handle it
+        if (navigation.canGoBack()) {
+          if (__DEV__) {
+            console.log('Can go back - letting React Navigation handle it');
+          }
+          navigation.goBack();
+          return true; // Prevent default behavior (we handled it)
+        }
+
+        // Check if we're on a root tab screen
+        // Pathnames in Expo Router tabs appear as /jobs, /profile, etc. (without the (tabs) group)
+        const isRootTab = pathname === '/jobs' || 
+                          pathname === '/profile' || 
+                          pathname === '/' ||
+                          pathname === '/index' ||
+                          pathname === '/(tabs)/jobs' || 
+                          pathname === '/(tabs)/profile' || 
+                          pathname === '/(tabs)' || 
+                          pathname === '/(tabs)/' ||
+                          pathname === '/(tabs)/index';
+        
+        if (__DEV__) {
+          console.log('isRootTab:', isRootTab);
+        }
+
+        if (isRootTab) {
+          // On root tab screen, exit app to prevent mounting error
+          // This prevents the "addViewAt: failed to insert view" error
+          if (__DEV__) {
+            console.log('On root tab - exiting app to prevent mounting error');
+          }
+          BackHandler.exitApp();
+          return true; // Prevent default (we handled it)
+        }
+
+        // Not on root tab and can't go back - let default behavior happen
+        if (__DEV__) {
+          console.log('Not on root tab and can\'t go back - allowing default behavior');
+        }
+        return false; // Allow default behavior
+      };
+
+      const backHandler = BackHandler.addEventListener(
+        'hardwareBackPress',
+        backAction
+      );
+
+      // Cleanup function
+      return () => {
+        if (__DEV__) {
+          console.log('=== TabLayout cleanup ===');
+        }
+        backHandler.remove();
+      };
+    }, [navigation, pathname, isAuthenticated])
+  );
 
   return (
     <Tabs
