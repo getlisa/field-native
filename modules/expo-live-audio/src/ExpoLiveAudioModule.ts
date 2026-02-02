@@ -1,6 +1,6 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import { ExpoLiveAudioModuleEvents, AudioConfig, AudioSessionConfig } from './ExpoLiveAudio.types';
+import { ExpoLiveAudioModuleEvents, AudioConfig, AudioSessionConfig, AudioInputDeviceInfo } from './ExpoLiveAudio.types';
 
 declare class ExpoLiveAudioModule extends NativeModule<ExpoLiveAudioModuleEvents> {
   /**
@@ -22,6 +22,11 @@ declare class ExpoLiveAudioModule extends NativeModule<ExpoLiveAudioModuleEvents
    * Configure audio session (iOS only)
    */
   configureAudioSession(config: AudioSessionConfig): Promise<void>;
+
+  /**
+   * Prefer Bluetooth input when available (native only)
+   */
+  preferBluetoothInput(): Promise<AudioInputDeviceInfo | null>;
 }
 
 // This call loads the native module object from the JSI.

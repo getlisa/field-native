@@ -34,6 +34,8 @@ export default {
       usesNonExemptEncryption: false,
     },
     android: {
+      // Meta Wearables Camera SDK requires minSdk >= 29
+      minSdkVersion: 29,
       runtimeVersion: '1.0.0',
       adaptiveIcon: {
         backgroundColor: '#e0f2fe', // primaryLight from theme
@@ -45,6 +47,11 @@ export default {
       permissions: [
         // Audio permissions
         'android.permission.RECORD_AUDIO', // Microphone for live transcription
+        
+        // Meta Wearables SDK permissions
+        'android.permission.BLUETOOTH',
+        'android.permission.BLUETOOTH_CONNECT',
+        'android.permission.INTERNET',
         
         // Foreground service permissions (for background recording)
         'android.permission.FOREGROUND_SERVICE',
@@ -59,6 +66,7 @@ export default {
         
         // Camera permission
         'android.permission.CAMERA',
+        
         
         // Media library permissions
         'android.permission.READ_MEDIA_IMAGES', // Android 13+ (API 33+) for reading images
@@ -76,6 +84,15 @@ export default {
       'expo-asset',
       "@react-native-community/datetimepicker",
       [
+        'expo-build-properties',
+        {
+          android: {
+            // Meta Wearables camera SDK requires minSdk >= 29
+            minSdkVersion: 29,
+          },
+        },
+      ],
+      [
         'expo-splash-screen',
         {
           image: './assets/images/splash-icon.png',
@@ -88,6 +105,7 @@ export default {
         },
       ],
       './plugins/withForegroundServiceType',
+      './plugins/withMetaWearablesRepo',
       // expo-image-picker plugin (handles camera/gallery permissions)
       [
         'expo-image-picker',

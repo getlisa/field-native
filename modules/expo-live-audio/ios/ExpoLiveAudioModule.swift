@@ -69,6 +69,17 @@ public class ExpoLiveAudioModule: Module {
         promise.reject("SESSION_ERROR", "Failed to configure audio session: \(error.localizedDescription)")
       }
     }
+
+    // Prefer Bluetooth input when available (fallback to built-in mic)
+    AsyncFunction("preferBluetoothInput") { (promise: Promise) in
+      do {
+        let info = try self.preferBluetoothInput()
+        promise.resolve(info as Any)
+      } catch {
+        print("[ExpoLiveAudio] ❌ Failed to prefer Bluetooth input: \(error)")
+        promise.reject("PREFERRED_INPUT_ERROR", "Failed to prefer Bluetooth input: \(error.localizedDescription)")
+      }
+    }
     
     // Define events
     Events("onAudioChunk", "onStarted", "onStopped", "onError", "onInterruptionBegan", "onInterruptionEnded")
@@ -173,6 +184,42 @@ public class ExpoLiveAudioModule: Module {
       try audioSession.setActive(true)
       print("[ExpoLiveAudio] ✅ Audio session activated (fallback)")
     }
+  }
+
+  private func preferBluetoothInput() throws -> [String: Any]? {
+    let audioSession = AVAudioSession.sharedInstance()
+
+    guard let availableInputs = audioSession.availableInputs, !availableInputs.isEmpty else {
+      print("[ExpoLiveAudio] ⚠️ No available audio inputs")
+      return nil
+    }
+
+    if let bluetoothInput = availableInputs.first(where: { input in
+      input.portType == .bluetoothHFP || input.portType == .bluetoothLE
+    }) {
+      try audioSession.setPreferredInput(bluetoothInput)
+      print("[ExpoLiveAudio] 🎧 Preferred Bluetooth microphone: \(bluetoothInput.portType.rawValue)")
+      return [
+        "type": bluetoothInput.portType.rawValue,
+        "productName": bluetoothInput.portName,
+        "isBluetooth": true,
+        "isBuiltIn": false
+      ]
+    }
+
+    if let builtInMic = availableInputs.first(where: { $0.portType == .builtInMic }) {
+      try audioSession.setPreferredInput(builtInMic)
+      print("[ExpoLiveAudio] 🎤 Preferred built-in microphone (Bluetooth not available)")
+      return [
+        "type": builtInMic.portType.rawValue,
+        "productName": builtInMic.portName,
+        "isBluetooth": false,
+        "isBuiltIn": true
+      ]
+    }
+
+    print("[ExpoLiveAudio] ⚠️ No suitable microphone input found")
+    return nil
   }
   
   // MARK: - Recording Control

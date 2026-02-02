@@ -1,0 +1,50 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath('com.android.tools.build:gradle')
+    classpath('com.facebook.react:react-native-gradle-plugin')
+    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+  }
+}
+
+allprojects {
+  repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://www.jitpack.io' }
+    // Patched mwdat-core (strips conflicting Facebook classes)
+    def patchedRepo = new File(rootDir, "patched-libs")
+    if (patchedRepo.exists()) {
+      maven { url patchedRepo }
+    }
+    // Meta Wearables DAT SDK (GitHub Packages)
+    maven {
+      url 'https://maven.pkg.github.com/facebook/meta-wearables-dat-android'
+      credentials {
+        // Username not required for GitHub Packages with PAT
+        username = ""
+        password = (System.getenv("GITHUB_TOKEN") ?: (findProperty("github_token") ?: ""))
+      }
+    }
+  }
+
+  // If patched mwdat-core exists, prefer it to avoid duplicate classes with React Native (fbjni, proguard-annotations)
+  def patchedAar = new File(rootDir, "patched-libs/com/meta/wearable/mwdat-core/0.3.0-patched/mwdat-core-0.3.0-patched.aar")
+  if (patchedAar.exists()) {
+    configurations.all {
+      resolutionStrategy {
+        dependencySubstitution {
+          substitute module('com.meta.wearable:mwdat-core:0.3.0') using module('com.meta.wearable:mwdat-core:0.3.0-patched')
+        }
+      }
+    }
+  }
+}
+
+apply plugin: "expo-root-project"
+apply plugin: "com.facebook.react.rootproject"

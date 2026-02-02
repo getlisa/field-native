@@ -27,6 +27,7 @@ import { ThemedText } from '@/components/themed-text';
 import { getMediaPicker, type MediaAsset } from '@/lib/media';
 import { useTheme } from '@/contexts/ThemeContext';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
+import ExpoWearablesCamera, { type WearablesStatusEvent } from 'expo-wearables-camera';
 
 // Custom recording options optimized for OpenAI Whisper API compatibility
 // iOS: Uses Linear PCM (WAV) for maximum compatibility
@@ -57,6 +58,8 @@ const OPENAI_COMPATIBLE_RECORDING_OPTIONS: RecordingOptions = {
 interface PendingImage {
   id: string;
   uri: string;
+  name?: string;
+  type?: string;
   isUploading?: boolean;
 }
 
@@ -106,11 +109,72 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // Use prop if provided, otherwise fall back to local state (for backward compatibility)
   const [isTranscribingLocal, setIsTranscribingLocal] = useState(false);
   const isTranscribing = isTranscribingProp || isTranscribingLocal;
+  const [wearablesStatus, setWearablesStatus] = useState<WearablesStatusEvent | null>(null);
+  const [isConnectingMeta, setIsConnectingMeta] = useState(false);
+  const [shouldMonitorWearables, setShouldMonitorWearables] = useState(false);
+  const wearablesInitAttemptedRef = useRef(false);
+  const wearablesInitializedRef = useRef(false);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
   const pulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const pulseAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
+
+  const ensureWearablesPermissions = useCallback(async () => {
+    if (Platform.OS !== 'android') return true;
+
+    if (!ExpoWearablesCamera?.requestAndroidPermissions) {
+      Alert.alert(
+        'Permissions Unavailable',
+        'Required permissions handler is missing in this build.',
+        [{ text: 'OK' }]
+      );
+      return false;
+    }
+
+    const granted = await ExpoWearablesCamera.requestAndroidPermissions();
+    if (!granted) {
+      Alert.alert(
+        'Permissions Required',
+        'Bluetooth and internet permissions are required to connect Meta AI.',
+        [{ text: 'OK' }]
+      );
+    }
+    return granted;
+  }, []);
+
+  const getWearablesErrorAlert = (error: any) => {
+    const code = error?.code as string | undefined;
+    const message = (error?.message as string | undefined) ?? '';
+
+    if (
+      code === 'REGISTRATION_WAIT_ERROR' ||
+      message.includes('Wearables registration not completed')
+    ) {
+      return {
+        title: 'Registration Incomplete',
+        message:
+          'Complete registration in the Meta AI app, then try again.',
+      };
+    }
+
+    if (message.includes('No active wearable device found')) {
+      return {
+        title: 'No Active Device',
+        message:
+          'No active glasses were found. Make sure your glasses are on and connected.',
+      };
+    }
+
+    if (message.includes('Camera permission not granted')) {
+      return {
+        title: 'Permission Required',
+        message: 'Please allow camera access for Meta AI glasses.',
+      };
+    }
+
+    return null;
+  };
 
   // Animate glow effect when speaking
   useEffect(() => {
@@ -135,6 +199,126 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       glowAnim.setValue(0);
     }
   }, [isSpeaking, glowAnim]);
+
+  useEffect(() => {
+    if (
+      Platform.OS !== 'android' ||
+      !shouldMonitorWearables ||
+      !ExpoWearablesCamera?.addListener
+    ) {
+      return;
+    }
+
+    const subscription = ExpoWearablesCamera.addListener('onWearablesStatus', (event) => {
+      setWearablesStatus(event);
+    });
+
+    return () => {
+      subscription?.remove();
+    };
+  }, [shouldMonitorWearables]);
+
+  useEffect(() => {
+    if (
+      Platform.OS !== 'android' ||
+      wearablesInitAttemptedRef.current ||
+      !ExpoWearablesCamera?.initialize ||
+      !ExpoWearablesCamera?.startMonitoring ||
+      !ExpoWearablesCamera?.getStatus
+    ) {
+      return;
+    }
+
+    wearablesInitAttemptedRef.current = true;
+
+    (async () => {
+      const hasPermissions = await ensureWearablesPermissions();
+      if (!hasPermissions) {
+        return;
+      }
+
+      try {
+        setShouldMonitorWearables(true);
+        await ExpoWearablesCamera.initialize();
+        await ExpoWearablesCamera.startMonitoring();
+        const status = await ExpoWearablesCamera.getStatus();
+        setWearablesStatus(status);
+        wearablesInitializedRef.current = true;
+      } catch (error: any) {
+        console.error('[MultiModalInput] Meta AI init error:', error);
+        const alert = getWearablesErrorAlert(error);
+        if (alert) {
+          Alert.alert(alert.title, alert.message, [{ text: 'OK' }]);
+          return;
+        }
+        Alert.alert(
+          'Meta AI Error',
+          'Failed to initialize Meta AI integration. Please try again.',
+          [{ text: 'OK' }]
+        );
+      }
+    })();
+  }, [ensureWearablesPermissions, getWearablesErrorAlert]);
+
+  const performMetaAiRegistration = useCallback(
+    async (showSuccessMessage: boolean) => {
+      if (Platform.OS !== 'android') {
+        return;
+      }
+
+      const wearablesModule = ExpoWearablesCamera;
+      if (
+        !wearablesModule?.initialize ||
+        !wearablesModule?.startMonitoring ||
+        !wearablesModule?.startRegistration ||
+        !wearablesModule?.getStatus
+      ) {
+        Alert.alert(
+          'Meta AI Unavailable',
+          'Meta wearables camera module is not available in this build.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      try {
+        setIsConnectingMeta(true);
+        if (!wearablesInitializedRef.current) {
+          const hasPermissions = await ensureWearablesPermissions();
+          if (!hasPermissions) return;
+          setShouldMonitorWearables(true);
+          await wearablesModule.initialize();
+          await wearablesModule.startMonitoring();
+          wearablesInitializedRef.current = true;
+        }
+        await wearablesModule.startRegistration();
+        const status = await wearablesModule.getStatus();
+        setWearablesStatus(status);
+        if (showSuccessMessage) {
+          Alert.alert(
+            'Complete in Meta AI',
+            'Finish registration in the Meta AI app, then return here to continue.',
+            [{ text: 'OK' }]
+          );
+        }
+      } catch (error: any) {
+        console.error('[MultiModalInput] Meta AI registration error:', error);
+        const alert = getWearablesErrorAlert(error);
+        if (alert) {
+          Alert.alert(alert.title, alert.message, [{ text: 'OK' }]);
+          return;
+        }
+        Alert.alert('Connection Error', 'Failed to connect Meta AI. Please try again.', [
+          { text: 'OK' },
+        ]);
+      } finally {
+        setIsConnectingMeta(false);
+      }
+    },
+    [ensureWearablesPermissions, getWearablesErrorAlert]
+  );
+
+  // Registration should only happen when user explicitly taps the Meta Glass button.
 
   const mediaPicker = getMediaPicker();
 
@@ -579,6 +763,133 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     }
   }, [mediaPicker, onImageSelected, pendingImages]);
 
+  const handleConnectMetaAiPress = useCallback(async () => {
+    if (Platform.OS !== 'android') {
+      Alert.alert(
+        'Meta AI Unavailable',
+        'Meta AI registration is supported on Android only.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    if (!ExpoWearablesCamera?.initialize) {
+      Alert.alert(
+        'Meta AI Unavailable',
+        'Meta wearables camera module is not available in this build.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    await performMetaAiRegistration(true);
+  }, [performMetaAiRegistration]);
+
+  const handleGlassesCameraPress = useCallback(async () => {
+    if (pendingImages.length >= 4) {
+      Alert.alert(
+        'Image Limit Reached',
+        'You can only attach up to 4 images at a time.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    if (Platform.OS !== 'android') {
+      Alert.alert(
+        'Glasses Camera Unavailable',
+        'Meta glasses camera is supported on Android only.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    try {
+      const wearablesModule = ExpoWearablesCamera;
+      if (
+        !wearablesModule?.initialize ||
+        !wearablesModule?.startMonitoring ||
+        !wearablesModule?.getStatus ||
+        !wearablesModule?.requestWearablesCameraPermission ||
+        !wearablesModule?.capturePhotoToTempFile
+      ) {
+        Alert.alert(
+          'Glasses Camera Unavailable',
+          'Meta wearables camera module is not available in this build.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const hasPermissions = await ensureWearablesPermissions();
+      if (!hasPermissions) return;
+
+      setShouldMonitorWearables(true);
+      if (!wearablesInitializedRef.current) {
+        await wearablesModule.initialize();
+        await wearablesModule.startMonitoring();
+        wearablesInitializedRef.current = true;
+      }
+      const status = await wearablesModule.getStatus();
+      if (status?.registrationState !== 'Registered') {
+        Alert.alert(
+          'Not Connected',
+          'Please tap “Connect Meta AI” before using the glasses camera.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      const wearablesPermission = await wearablesModule.requestWearablesCameraPermission();
+      if (wearablesPermission !== 'granted') {
+        Alert.alert(
+          'Permission Required',
+          'Please allow camera access for Meta AI glasses.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const result = await wearablesModule.capturePhotoToTempFile();
+      if (result?.localPath) {
+        const fileName = result.localPath.split('/').pop() || `glasses-${Date.now()}.jpg`;
+        const fileExt = fileName.split('.').pop()?.toLowerCase();
+        const mimeType = fileExt === 'heic' ? 'image/heic' : 'image/jpeg';
+        const uri = result.localPath.startsWith('file://')
+          ? result.localPath
+          : `file://${result.localPath}`;
+        if (__DEV__) {
+          console.log('[MultiModalInput] Glasses camera captured:', {
+            localPath: result.localPath,
+            width: result.width,
+            height: result.height,
+            sizeBytes: result.sizeBytes,
+            timestamp: result.timestamp,
+          });
+        }
+
+        onImageSelected?.({
+          uri,
+          type: mimeType,
+          name: fileName,
+        });
+        return;
+      }
+
+      Alert.alert('Capture Error', 'No photo was returned from glasses camera.');
+    } catch (error: any) {
+      console.error('[MultiModalInput] Glasses camera error:', error);
+      const alert = getWearablesErrorAlert(error);
+      if (alert) {
+        Alert.alert(alert.title, alert.message, [{ text: 'OK' }]);
+        return;
+      }
+      Alert.alert(
+        'Glasses Camera Error',
+        'Failed to connect to Meta AI or capture from glasses. Please try again.'
+      );
+    }
+  }, [ensureWearablesPermissions, getWearablesErrorAlert, onImageSelected, pendingImages]);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Gallery Pick
   // Uses expo-image-picker which provides unified API for iOS and Android:
@@ -694,6 +1005,24 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
       <View style={styles.actionsRow}>
         <View style={styles.mediaButtons}>
+          {Platform.OS === 'android' && (
+            <Pressable
+              style={[styles.connectButton, { backgroundColor: colors.backgroundSecondary }]}
+              onPress={handleConnectMetaAiPress}
+              disabled={
+                isLoading || isRecording || isTranscribing || disabled || isConnectingMeta
+              }>
+              {isConnectingMeta ? (
+                <ActivityIndicator size="small" color={colors.textSecondary} />
+              ) : (
+                <Ionicons name="link-outline" size={16} color={colors.textSecondary} />
+              )}
+              <ThemedText style={[styles.connectButtonText, { color: colors.textSecondary }]}>
+                {wearablesStatus?.registrationState === 'Registered' ? 'Connected' : 'Connect'}
+              </ThemedText>
+            </Pressable>
+          )}
+
           {/* Voice Button */}
           <View style={styles.voiceButtonContainer}>
               {shouldPulse && (
@@ -744,6 +1073,15 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             disabled={isLoading || isRecording || isTranscribing || disabled}>
             <Ionicons name="camera-outline" size={18} color={colors.textSecondary} />
           </Pressable>
+
+          {Platform.OS === 'android' && (
+            <Pressable
+              style={[styles.iconButton, { backgroundColor: colors.backgroundSecondary }]}
+              onPress={handleGlassesCameraPress}
+              disabled={isLoading || isRecording || isTranscribing || disabled}>
+              <Ionicons name="glasses-outline" size={18} color={colors.textSecondary} />
+            </Pressable>
+          )}
         </View>
 
         <Pressable
@@ -764,6 +1102,12 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           </ThemedText>
         </Pressable>
       </View>
+
+      {Platform.OS === 'android' && wearablesStatus?.lastError ? (
+        <ThemedText style={[styles.wearablesErrorText, { color: colors.textSecondary }]}>
+          Meta AI error: {wearablesStatus.lastError}
+        </ThemedText>
+      ) : null}
 
       {/* Transcription Status */}
       {/* {isTranscribing && (
@@ -870,6 +1214,18 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
   },
+  connectButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 36,
+    paddingHorizontal: 10,
+    borderRadius: 18,
+  },
+  connectButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
   iconButton: {
     width: 36,
     height: 36,
@@ -926,6 +1282,10 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     backgroundColor: '#0a7ea4',
+  },
+  wearablesErrorText: {
+    fontSize: 12,
+    marginTop: 4,
   },
 });
 

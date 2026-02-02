@@ -162,12 +162,18 @@ export default function RootLayout() {
     const initPermissions = async () => {
       try {
         const permissionService = getPermissionService();
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'A',location:'app/_layout.tsx:initPermissions:before',message:'Requesting permissions',data:{hasService:!!permissionService},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
         // Request all required permissions sequentially:
         // 1. Microphone permission
         // 2. Notification permission (right after microphone)
         // 3. Background permissions check
         const permissions = await permissionService.requestAllPermissions();
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'A',location:'app/_layout.tsx:initPermissions:after',message:'Permissions resolved',data:{microphoneGranted:permissions?.microphone?.granted,notificationsGranted:permissions?.notifications?.granted,backgroundGranted:permissions?.background?.granted},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
         if (__DEV__) {
           console.log('[RootLayout] ✅ Permissions initialized:', {
@@ -177,6 +183,9 @@ export default function RootLayout() {
           });
         }
       } catch (error) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'A',location:'app/_layout.tsx:initPermissions:error',message:'Permissions request failed',data:{errorMessage:(error as any)?.message || 'unknown'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         console.warn('[RootLayout] Failed to initialize permissions:', error);
       }
     };
@@ -187,6 +196,9 @@ export default function RootLayout() {
   // Handle deep links (from background service notification or other sources)
   useEffect(() => {
     const handleDeepLink = (url: string, isInitial = false) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'B',location:'app/_layout.tsx:handleDeepLink:start',message:'Deep link handler start',data:{isInitial,urlLength:url?.length || 0},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (__DEV__) {
         console.log('[RootLayout] Deep link received:', url, isInitial ? '(initial)' : '(runtime)');
       }
@@ -231,6 +243,9 @@ export default function RootLayout() {
         }
 
         if (jobId) {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'B',location:'app/_layout.tsx:handleDeepLink:jobId',message:'Deep link jobId resolved',data:{jobIdPresent:!!jobId,isInitial,currentPath:segments.join('/')},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           if (__DEV__) {
             console.log('[RootLayout] Navigating to job:', jobId, isInitial ? '(initial - using replace)' : '(runtime)');
           }
@@ -343,6 +358,9 @@ export default function RootLayout() {
     
     const setupNotifications = async () => {
       try {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'C',location:'app/_layout.tsx:setupNotifications:beforeImport',message:'Setting up notifications',data:{},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         // Dynamically import to avoid native module errors at top-level
         const Notifications = await import('expo-notifications');
         
@@ -359,6 +377,9 @@ export default function RootLayout() {
           // Get the last notification response (synchronous replacement for deprecated async method)
           try {
             const response = Notifications.getLastNotificationResponse();
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/21b1feb4-42fb-4f89-af87-18fc02b2aca9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'C',location:'app/_layout.tsx:setupNotifications:lastResponse',message:'Last notification response read',data:{hasResponse:!!response,hasJobId:!!response?.notification?.request?.content?.data?.jobId},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             if (response) {
               const data = response.notification.request.content.data;
               if (__DEV__) {
@@ -458,7 +479,6 @@ export default function RootLayout() {
             <AuthGuard>
               <Stack>
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                <Stack.Screen name="jobs/index" options={{ headerShown: false, title: 'Jobs' }} />
                 <Stack.Screen 
                   name="jobs/[id]" 
                   options={{ 

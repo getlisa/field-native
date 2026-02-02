@@ -19,6 +19,14 @@ export type AudioSessionConfig = {
   allowBluetoothA2DP?: boolean;
 };
 
+export type AudioInputDeviceInfo = {
+  type: string;
+  productName?: string;
+  address?: string;
+  isBluetooth?: boolean;
+  isBuiltIn?: boolean;
+};
+
 export type AudioChunkEventPayload = {
   data: string; // base64 encoded PCM16 audio data
 };

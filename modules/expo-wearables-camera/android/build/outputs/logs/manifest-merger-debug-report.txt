@@ -1,0 +1,14 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml:1:1-2:12
+INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml:1:1-2:12
+	package
+		INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml
+uses-sdk
+INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml
+INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/zen-shivam/Documents/field-native/modules/expo-wearables-camera/android/src/main/AndroidManifest.xml

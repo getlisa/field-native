@@ -1,0 +1,7 @@
+{
+  "platforms": ["android", "web"],
+  "android": {
+    "modules": ["expo.modules.wearablescamera.ExpoWearablesCameraModule"]
+  }
+}
+

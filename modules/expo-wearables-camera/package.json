@@ -1,0 +1,27 @@
+{
+  "name": "expo-wearables-camera",
+  "version": "0.1.0",
+  "description": "Meta Wearables camera bridge (Android)",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "expo-module build",
+    "clean": "expo-module clean",
+    "lint": "expo-module lint",
+    "prepare": "expo-module prepare"
+  },
+  "keywords": ["expo", "react-native", "meta", "wearables", "camera"],
+  "homepage": "https://developers.meta.com/wearables/faq",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "expo-module-scripts": "^5.0.8",
+    "expo": "^54.0.27",
+    "react-native": "0.81.5"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

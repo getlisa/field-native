@@ -144,7 +144,29 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
       paddingHorizontal: 12,
       paddingVertical: 8,
     },
+    image: {
+      width: 240,
+      height: 240,
+      borderRadius: 8,
+    },
   }), [colors, isAssistant]);
+
+  const markdownRules = useMemo(() => ({
+    image: (node: any, _children: any, _parent: any, styles: any) => {
+      const uri = node?.attributes?.src;
+      if (!uri) return null;
+      return (
+        <Image
+          key={node.key}
+          source={{ uri }}
+          style={[styles.image, { backgroundColor: colors.backgroundSecondary }]}
+          contentFit="contain"
+          transition={200}
+          accessibilityLabel={node?.attributes?.alt || 'Markdown image'}
+        />
+      );
+    },
+  }), [colors.backgroundSecondary]);
 
   const imageAttachments = (message.attachments || []).filter((a: MessageAttachment) => {
     const type = a.fileType || '';
@@ -313,6 +335,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
           {message.content ? (
             <Markdown
               style={markdownStyles}
+              rules={markdownRules}
               onLinkPress={(url) => {
                 Linking.canOpenURL(url).then((supported) => {
                   if (supported) {

@@ -18,6 +18,11 @@ const ExpoLiveAudioModule = {
   async configureAudioSession(_config: AudioSessionConfig) {
     console.warn('[ExpoLiveAudio] configureAudioSession is not supported on web');
   },
+  
+  async preferBluetoothInput() {
+    console.warn('[ExpoLiveAudio] preferBluetoothInput is not supported on web');
+    return null;
+  },
 };
 
 export default ExpoLiveAudioModule;

@@ -40,6 +40,13 @@ declare class ExpoLiveAudioNativeModule extends NativeModule<ExpoLiveAudioModule
   start(): Promise<void>;
   stop(): void;
   configureAudioSession(options: any): Promise<void>;
+  preferBluetoothInput(): Promise<{
+    type: string;
+    productName?: string;
+    address?: string;
+    isBluetooth?: boolean;
+    isBuiltIn?: boolean;
+  } | null>;
 }
 
 // Load the native module
@@ -131,6 +138,22 @@ const ExpoLiveAudio = {
       }
     } catch (err) {
       console.error('[ExpoLiveAudio] configureAudioSession error:', err);
+    }
+  },
+
+  /**
+   * Prefer Bluetooth mic input when available.
+   */
+  async preferBluetoothInput() {
+    try {
+      const info = await NativeExpoLiveAudio.preferBluetoothInput();
+      if (__DEV__) {
+        console.log('[ExpoLiveAudio] ✅ preferBluetoothInput() called', info);
+      }
+      return info;
+    } catch (err) {
+      console.error('[ExpoLiveAudio] preferBluetoothInput error:', err);
+      return null;
     }
   },
 

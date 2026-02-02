@@ -36,6 +36,7 @@ import { useJobDetailContext } from '@/contexts/JobDetailContext';
 import { copilotChatService, type CopilotMessage } from '@/services/copilotChatService';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
+import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
 import type { Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
@@ -232,8 +233,8 @@ export const AskAITab: React.FC = () => {
         contentType: hasImages ? 'IMAGE' : 'TEXT',
         attachments: pendingImages.map((img) => ({
           id: img.id,
-          fileName: '',
-          fileType: 'image/jpeg',
+          fileName: img.name || '',
+          fileType: img.type || 'image/jpeg',
           fileSize: 0,
           url: img.uri,
         })),
@@ -250,10 +251,6 @@ export const AskAITab: React.FC = () => {
 
         // If there are pending images, upload them first
         if (pendingImages.length > 0) {
-          if (!hasContent) {
-            console.warn('[AskAI] No question text provided with images');
-            return;
-          }
 
           setIsUploadingImages(true);
           setPendingImages((prev) => prev.map((img) => ({ ...img, isUploading: true })));
@@ -261,8 +258,8 @@ export const AskAITab: React.FC = () => {
           try {
             const imagesToUpload = pendingImages.map((img) => ({
               uri: img.uri,
-              type: 'image/jpeg',
-              name: `image-${img.id}.jpg`,
+            type: img.type || 'image/jpeg',
+            name: img.name || `image-${img.id}.jpg`,
             }));
 
             console.log('[AskAI] Uploading images:', imagesToUpload.length);
@@ -271,7 +268,7 @@ export const AskAITab: React.FC = () => {
             const uploadResult = await copilotChatService.uploadImages(
               convId,
               imagesToUpload,
-              content
+              hasContent ? content : undefined
             );
             console.log('[AskAI] Images uploaded successfully');
 
@@ -528,6 +525,8 @@ export const AskAITab: React.FC = () => {
     const newImage: PendingImage = {
       id: `img-${Date.now()}`,
       uri: asset.uri,
+      name: asset.name,
+      type: asset.type,
       isUploading: false,
     };
     setPendingImages((prev) => [...prev, newImage]);
@@ -554,6 +553,18 @@ export const AskAITab: React.FC = () => {
       // Small delay to let TTS cleanup
       await new Promise(resolve => setTimeout(resolve, 100));
       await pauseTranscription();
+    }
+
+    // Prefer Bluetooth mic when available (fallback handled natively)
+    try {
+      if (ExpoLiveAudio?.preferBluetoothInput) {
+        const inputInfo = await ExpoLiveAudio.preferBluetoothInput();
+        if (__DEV__) {
+          console.log('[AskAI] Preferred input device:', inputInfo);
+        }
+      }
+    } catch (error) {
+      console.warn('[AskAI] Failed to prefer Bluetooth mic input:', error);
     }
   }, [isLiveTranscribing, isTranscriptionConnected, pauseTranscription, stopTTS]);
 

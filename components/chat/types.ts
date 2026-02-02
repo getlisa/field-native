@@ -25,6 +25,8 @@ export interface MessageAttachment {
 export interface PendingImage {
   id: string;
   uri: string;
+  name?: string;
+  type?: string;
   isUploading?: boolean;
 }
 

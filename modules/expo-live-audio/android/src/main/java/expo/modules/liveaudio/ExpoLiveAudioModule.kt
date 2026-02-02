@@ -1,7 +1,11 @@
 package expo.modules.liveaudio
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -17,6 +21,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
 import androidx.core.os.bundleOf
 import kotlinx.coroutines.*
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.coroutineContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -135,6 +141,23 @@ class ExpoLiveAudioModule : Module() {
         promise.reject("CONFIG_ERROR", "Failed to configure audio: ${e.message}", e)
       }
     }
+
+    // Prefer Bluetooth input when available (fallback to built-in mic)
+    AsyncFunction("preferBluetoothInput") { promise: Promise ->
+      scope.launch {
+        try {
+          val info = preferBluetoothInput()
+          if (info == null) {
+            Log.w("ExpoLiveAudio", "⚠️ Could not prefer Bluetooth input (no device found)")
+          } else {
+            Log.i("ExpoLiveAudio", "🎤 Active input device: $info")
+          }
+          promise.resolve(info)
+        } catch (e: Exception) {
+          promise.reject("PREFERRED_INPUT_ERROR", "Failed to prefer Bluetooth input: ${e.message}", e)
+        }
+      }
+    }
   }
   
   // MARK: - Recording Control
@@ -209,6 +232,135 @@ class ExpoLiveAudioModule : Module() {
       releaseAudioEffects()
       throw e
     }
+  }
+
+  private suspend fun preferBluetoothInput(): Map<String, Any>? {
+    val context = appContext.reactContext ?: return null
+    val manager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
+
+    // Always use communication mode for voice routing
+    manager.mode = AudioManager.MODE_IN_COMMUNICATION
+
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      val devices = manager.availableCommunicationDevices
+
+      val bluetoothDevice = devices.firstOrNull { device ->
+        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+          device.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+      }
+
+      if (bluetoothDevice != null) {
+        val set = manager.setCommunicationDevice(bluetoothDevice)
+        Log.i("ExpoLiveAudio", "🎧 Preferred Bluetooth mic: ${bluetoothDevice.productName} (set=$set)")
+        return getActiveInputDeviceInfo(manager)
+      }
+
+      val builtInMic = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+      if (builtInMic != null) {
+        val set = manager.setCommunicationDevice(builtInMic)
+        Log.i("ExpoLiveAudio", "🎤 Preferred built-in mic (Bluetooth not available) (set=$set)")
+        return getActiveInputDeviceInfo(manager)
+      }
+
+      null
+    } else {
+      if (manager.isBluetoothScoAvailableOffCall) {
+        @Suppress("DEPRECATION")
+        manager.startBluetoothSco()
+        @Suppress("DEPRECATION")
+        manager.isBluetoothScoOn = true
+        val scoConnected = waitForScoConnection(context, 2000)
+        Log.i("ExpoLiveAudio", "🎧 Bluetooth SCO connected=$scoConnected")
+        getActiveInputDeviceInfo(manager)
+      } else {
+        @Suppress("DEPRECATION")
+        manager.stopBluetoothSco()
+        @Suppress("DEPRECATION")
+        manager.isBluetoothScoOn = false
+        getActiveInputDeviceInfo(manager)
+      }
+    }
+  }
+
+  private fun getActiveInputDeviceInfo(manager: AudioManager): Map<String, Any>? {
+    val inputs = manager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+    if (inputs.isEmpty()) return null
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      val comm = manager.communicationDevice
+      if (comm != null) {
+        return mapFromDevice(comm)
+      }
+    }
+
+    val bluetooth = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+    if (manager.isBluetoothScoOn && bluetooth != null) {
+      return mapFromDevice(bluetooth)
+    }
+
+    val builtIn = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+    if (builtIn != null) {
+      return mapFromDevice(builtIn)
+    }
+
+    return mapFromDevice(inputs.first())
+  }
+
+  private fun mapFromDevice(device: AudioDeviceInfo): Map<String, Any> {
+    val typeName = when (device.type) {
+      AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BLUETOOTH_SCO"
+      AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE_HEADSET"
+      AudioDeviceInfo.TYPE_BUILTIN_MIC -> "BUILTIN_MIC"
+      AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRED_HEADSET"
+      AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "WIRED_HEADPHONES"
+      else -> "OTHER_${device.type}"
+    }
+
+    return mapOf(
+      "type" to typeName,
+      "productName" to (device.productName?.toString() ?: ""),
+      "address" to (device.address ?: ""),
+      "isBluetooth" to (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || device.type == AudioDeviceInfo.TYPE_BLE_HEADSET),
+      "isBuiltIn" to (device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC)
+    )
+  }
+
+  private suspend fun waitForScoConnection(context: Context, timeoutMs: Long): Boolean {
+    return withTimeoutOrNull(timeoutMs) {
+      suspendCancellableCoroutine<Boolean> { cont ->
+        val filter = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+        val receiver = object : BroadcastReceiver() {
+          override fun onReceive(context: Context?, intent: Intent?) {
+            val state = intent?.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+              ?: return
+            when (state) {
+              AudioManager.SCO_AUDIO_STATE_CONNECTED -> {
+                if (!cont.isCompleted) cont.resume(true) {}
+                try {
+                  context?.unregisterReceiver(this)
+                } catch (_: Exception) {
+                }
+              }
+              AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                if (!cont.isCompleted) cont.resume(false) {}
+                try {
+                  context?.unregisterReceiver(this)
+                } catch (_: Exception) {
+                }
+              }
+            }
+          }
+        }
+
+        context.registerReceiver(receiver, filter)
+        cont.invokeOnCancellation {
+          try {
+            context.unregisterReceiver(receiver)
+          } catch (_: Exception) {
+          }
+        }
+      }
+    } ?: false
   }
   
   private fun stopRecording() {

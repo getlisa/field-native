@@ -1,0 +1,3 @@
+[submodule "external/meta-wearables-dat-android"]
+	path = external/meta-wearables-dat-android
+	url = https://github.com/facebook/meta-wearables-dat-android.git
