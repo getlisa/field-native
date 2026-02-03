@@ -13,6 +13,6 @@ type ExpoWearablesCameraNativeModule = {
         remove: () => void;
     };
 };
-declare const _default: ExpoWearablesCameraNativeModule;
-export default _default;
+declare const ExpoWearablesCamera: ExpoWearablesCameraNativeModule | null;
+export default ExpoWearablesCamera;
 //# sourceMappingURL=ExpoWearablesCameraModule.d.ts.map

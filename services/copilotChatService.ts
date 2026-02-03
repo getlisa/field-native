@@ -222,30 +222,36 @@ export const copilotChatService = {
     mimeType?: string;
     language?: string;
   }): Promise<{ success: boolean; text: string }> {
+    console.log('[transcribeVoice] Transcribing voice with language:', params.language);  
     const res = await fetch(`${COPILOT_API_BASE}/voice/transcribe`, {
       method: 'POST',
       headers: buildHeaders(true),
       body: JSON.stringify({
         audioBase64: params.audioBase64,
         mimeType: params.mimeType || 'audio/webm',
-        // language: params.language,
+        // language: params.language || 'en',
       }),
     });
+    const responseText = await res.text();
+
+    if (__DEV__) {
+      console.log('[transcribeVoice] Response text:', responseText);
+    }
 
     if (!res.ok) {
       if (__DEV__) {
         console.warn('[transcribeVoice] Failed to transcribe voice:', res);
       }
-      let body = '';
-      try {
-        body = await res.text();
-      } catch {
-        body = '';
-      }
-      throw new Error(`voice/transcribe failed (${res.status}): ${body || 'no response body'}`);
+      throw new Error(
+        `voice/transcribe failed (${res.status}): ${responseText || 'no response body'}`
+      );
     }
 
-    return res.json();
+    try {
+      return JSON.parse(responseText);
+    } catch (parseError) {
+      throw new Error('voice/transcribe failed to parse JSON response');
+    }
   },
 
   async sendMessage(params: {

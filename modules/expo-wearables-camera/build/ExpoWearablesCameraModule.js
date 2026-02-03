@@ -1,3 +1,4 @@
-import { requireNativeModule } from 'expo-modules-core';
-export default requireNativeModule('ExpoWearablesCamera');
+import { requireOptionalNativeModule } from 'expo-modules-core';
+const ExpoWearablesCamera = requireOptionalNativeModule('ExpoWearablesCamera');
+export default ExpoWearablesCamera;
 //# sourceMappingURL=ExpoWearablesCameraModule.js.map

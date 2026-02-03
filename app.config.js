@@ -19,6 +19,9 @@ export default {
       infoPlist: {
         // Microphone permission (for live transcription)
         NSMicrophoneUsageDescription: 'This app needs access to your microphone for live transcription during job visits.',
+
+        // Speech recognition permission (for voice input transcription)
+        NSSpeechRecognitionUsageDescription: 'This app needs access to speech recognition for voice input.',
         
         // Camera permission (for taking photos)
         NSCameraUsageDescription: 'This app needs access to your camera to take photos during job visits.',
@@ -112,6 +115,14 @@ export default {
         {
           photosPermission: 'This app needs access to your photos to select images for job documentation.',
           cameraPermission: 'This app needs access to your camera to take photos during job visits.',
+        },
+      ],
+      [
+        'expo-speech-recognition',
+        {
+          microphonePermission: 'This app needs access to your microphone for voice input.',
+          speechRecognitionPermission: 'This app needs access to speech recognition for voice input.',
+          androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
         },
       ],
       'expo-localization',

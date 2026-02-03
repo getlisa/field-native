@@ -50,7 +50,6 @@ class ExpoWearablesCameraModule : Module() {
   companion object {
     private const val TAG = "ExpoWearablesCamera"
     private const val DEVICE_TIMEOUT_MS = 8000L
-    private const val STREAM_TIMEOUT_MS = 8000L
   }
 
   private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -240,7 +239,7 @@ class ExpoWearablesCameraModule : Module() {
           ensureInitialized()
           ensureRegistered()
 
-          val permissionStatus = Wearables.checkPermissionStatus(Permission.CAMERA).getOrNull()
+          val permissionStatus = ensureCameraPermission()
           if (permissionStatus != PermissionStatus.Granted) {
             throw IllegalStateException("Camera permission not granted")
           }
@@ -261,11 +260,18 @@ class ExpoWearablesCameraModule : Module() {
             Wearables.startStreamSession(
               application,
               deviceSelector,
-              StreamConfiguration(videoQuality = VideoQuality.MEDIUM, 24)
+              StreamConfiguration(videoQuality = VideoQuality.LOW, 24)
             )
 
           val photoData = try {
-            waitForStreaming(streamSession)
+            val streaming =
+              withTimeoutOrNull(DEVICE_TIMEOUT_MS) {
+                streamSession.state.first { it == StreamSessionState.STREAMING }
+              }
+            if (streaming != StreamSessionState.STREAMING) {
+              throw IllegalStateException("Stream did not start")
+            }
+
             val result = streamSession.capturePhoto()
             result.getOrNull() ?: throw IllegalStateException("Photo capture failed")
           } finally {
@@ -378,16 +384,6 @@ class ExpoWearablesCameraModule : Module() {
         permissionContinuation?.resume(permissionStatus)
         permissionContinuation = null
       }
-  }
-
-  private suspend fun waitForStreaming(streamSession: StreamSession) {
-    val state =
-      withTimeoutOrNull(STREAM_TIMEOUT_MS) {
-        streamSession.state.first { it == StreamSessionState.STREAMING }
-      }
-    if (state != StreamSessionState.STREAMING) {
-      throw IllegalStateException("Stream did not reach STREAMING state")
-    }
   }
 
   private fun byteBufferToBytes(buffer: java.nio.ByteBuffer): ByteArray {

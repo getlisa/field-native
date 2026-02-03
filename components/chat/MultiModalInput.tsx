@@ -9,6 +9,7 @@ import {
   AudioQuality,
 } from 'expo-audio';
 import { readAsStringAsync } from 'expo-file-system/legacy';
+import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -29,14 +30,12 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 import ExpoWearablesCamera, { type WearablesStatusEvent } from 'expo-wearables-camera';
 
-// Custom recording options optimized for OpenAI Whisper API compatibility
-// iOS: Uses Linear PCM (WAV) for maximum compatibility
-// Android: Uses AAC (M4A) which works well
-const SILENCE_TIMEOUT_MS = 200; // stop after this much silence if recording
+const SPEECH_RECOGNITION_LANG = 'en-US';
+const SPEECH_AUDIO_FILENAME_PREFIX = 'askai-voice';
 const OPENAI_COMPATIBLE_RECORDING_OPTIONS: RecordingOptions = {
   extension: Platform.OS === 'ios' ? '.wav' : '.m4a',
-  sampleRate: 16000, // 16kHz is optimal for speech recognition
-  numberOfChannels: 1, // Mono for speech
+  sampleRate: 16000,
+  numberOfChannels: 1,
   bitRate: 128000,
   ios: {
     outputFormat: IOSOutputFormat.LINEARPCM,
@@ -114,8 +113,13 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const [shouldMonitorWearables, setShouldMonitorWearables] = useState(false);
   const wearablesInitAttemptedRef = useRef(false);
   const wearablesInitializedRef = useRef(false);
-  const recorderRef = useRef<AudioRecorder | null>(null);
+  const legacyRecorderRef = useRef<AudioRecorder | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
+  const isRecordingRef = useRef(false);
+  const isStoppingRef = useRef(false);
+  const recordingModeRef = useRef<'speech' | 'legacy' | null>(null);
+  const speechListenersRef = useRef<Array<{ remove: () => void }>>([]);
+  const latestRecordingUriRef = useRef<string | null>(null);
   const pulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const pulseAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
@@ -371,14 +375,82 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     }
   };
 
-  const startVoiceRecording = useCallback(async () => {
+  const processRecordedAudio = useCallback(
+    async (uri: string) => {
+      const durationMs = recordingStartTimeRef.current
+        ? Date.now() - recordingStartTimeRef.current
+        : undefined;
+      const mimeType = getAudioMimeTypeFromUri(uri);
+      const fileExtension = uri.split('.').pop()?.toLowerCase();
+      console.log('[MultiModalInput] Audio recorded:', {
+        uri,
+        mimeType,
+        fileExtension,
+        platform: Platform.OS,
+      });
+      let base64Data: string | undefined;
+
+      try {
+        // NOTE: readAsStringAsync is from expo-file-system/legacy; suppress deprecation warning intentionally
+        // eslint-disable-next-line deprecation/deprecation
+        const rawBase64 = await readAsStringAsync(uri, {
+          encoding: 'base64',
+        });
+        base64Data = `data:${mimeType};base64,${rawBase64}`;
+
+        if (__DEV__) {
+          console.log('[MultiModalInput] Audio file size:', {
+            base64Length: rawBase64.length,
+            estimatedSizeKB: Math.round((rawBase64.length * 0.75) / 1024),
+          });
+        }
+      } catch (readError) {
+        console.warn('[MultiModalInput] Failed to read audio file for base64:', readError);
+      }
+
+      if (__DEV__) {
+        console.log('[MultiModalInput] Recording saved:', {
+          uri,
+          durationMs,
+          platform: Platform.OS,
+          hasBase64: Boolean(base64Data),
+        });
+      }
+
+      if (onVoiceRecorded) {
+        if (!isTranscribingProp) {
+          setIsTranscribingLocal(true);
+        }
+        try {
+          await onVoiceRecorded({
+            uri,
+            durationMs,
+            mimeType,
+            base64Data,
+          });
+        } catch (transcriptionError) {
+          console.error('[MultiModalInput] Voice processing error:', transcriptionError);
+          Alert.alert('Voice Error', 'Could not process voice recording. Please try again.');
+        } finally {
+          if (!isTranscribingProp) {
+            setIsTranscribingLocal(false);
+          }
+        }
+      } else {
+        onSendMessage(base64Data ?? uri, 'voice');
+      }
+    },
+    [onSendMessage, onVoiceRecorded, isTranscribingProp]
+  );
+
+  const startLegacyRecording = useCallback(async () => {
     try {
-      // Notify parent that recording is starting (to pause live transcription if needed)
+      if (isRecordingRef.current) return;
+
       if (onVoiceRecordingStart) {
         await onVoiceRecordingStart();
       }
 
-      // Request microphone permissions
       const { granted } = await requestRecordingPermissionsAsync();
       if (!granted) {
         Alert.alert(
@@ -389,234 +461,108 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         return;
       }
 
-      // Set audio mode for recording - platform-aware configuration
       try {
         await setAudioModeAsync({
           allowsRecording: true,
           playsInSilentMode: true,
           shouldPlayInBackground: false,
-          // iOS-specific: route audio through speaker when not using headphones
           ...(Platform.OS === 'ios' && { staysActiveInBackground: false }),
         });
       } catch (audioModeError: any) {
         console.warn('[MultiModalInput] Could not set audio mode:', audioModeError);
-        // Check if this is because another audio session is active
-        const errorMsg = audioModeError?.message || '';
-        if (errorMsg.includes('OSStatus') || errorMsg.includes('audio session')) {
-          Alert.alert(
-            'Audio In Use',
-            'The microphone is currently being used by another feature. Please stop the active recording first.',
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-        // Otherwise, try to continue anyway
       }
 
-      // Create recorder instance with OpenAI-compatible settings
-      // iOS: Linear PCM (WAV) for maximum compatibility with OpenAI Whisper
-      // Android: AAC (M4A) which works well
       const recorder = new AudioModule.AudioRecorder(OPENAI_COMPATIBLE_RECORDING_OPTIONS);
-
-      // Prepare and start recording
       await recorder.prepareToRecordAsync();
       await recorder.record();
 
-      recorderRef.current = recorder;
+      legacyRecorderRef.current = recorder;
       recordingStartTimeRef.current = Date.now();
+      recordingModeRef.current = 'legacy';
+      isRecordingRef.current = true;
       setIsRecording(true);
 
       if (__DEV__) {
-        console.log(`[MultiModalInput] Voice recording started on ${Platform.OS}`);
+        console.log(`[MultiModalInput] Legacy recording started on ${Platform.OS}`);
       }
     } catch (error: any) {
-      console.error('[MultiModalInput] Failed to start recording:', error);
-
-      const errorMessage = error?.message || 'Unknown error';
-      // Platform-specific error handling
-      const isSimulatorError =
-        errorMessage.includes('simulator') ||
-        errorMessage.includes('not available') ||
-        errorMessage.includes('emulator');
-
-      // Check for audio session conflicts
-      const isAudioSessionError = 
-        errorMessage.includes('OSStatus error 561017449') ||
-        errorMessage.includes('561017449') ||
-        errorMessage.includes('audio session');
-
-      if (isSimulatorError) {
-        Alert.alert(
-          Platform.OS === 'ios' ? 'Simulator Limitation' : 'Emulator Limitation',
-          `Voice recording may not work properly on ${Platform.OS === 'ios' ? 'simulators' : 'emulators'}. Please test on a real device for full functionality.`,
-          [{ text: 'OK' }]
-        );
-      } else if (isAudioSessionError) {
-        Alert.alert(
-          'Audio Session Conflict',
-          'The microphone is currently being used by another feature. Please stop the active recording first.',
-          [{ text: 'OK' }]
-        );
-      } else {
-        Alert.alert('Recording Error', `Could not start voice recording: ${errorMessage}`);
-      }
+      console.error('[MultiModalInput] Failed to start legacy recording:', error);
+      Alert.alert('Recording Error', `Could not start voice recording: ${error?.message || 'Unknown error'}`);
+      isRecordingRef.current = false;
       setIsRecording(false);
     }
   }, [onVoiceRecordingStart]);
 
-  const stopVoiceRecording = useCallback(async () => {
-    if (!recorderRef.current) return;
+  const stopLegacyRecording = useCallback(async () => {
+    if (!legacyRecorderRef.current) return;
 
     const startTime = recordingStartTimeRef.current;
-    const recorder = recorderRef.current;
+    const recorder = legacyRecorderRef.current;
     let uri: string | null = null;
     let stopError: Error | null = null;
 
     try {
+      isRecordingRef.current = false;
       setIsRecording(false);
 
       if (__DEV__) {
-        console.log('[MultiModalInput] Stopping voice recording...');
+        console.log('[MultiModalInput] Stopping legacy recording...');
       }
 
-      // Try to stop the recorder and get the URI
       try {
         await recorder.stop();
         const status = recorder.getStatus();
         uri = status.url || recorder.uri;
       } catch (error: any) {
-        // OSStatus error 561017449 = audio session conflict (e.g., another audio session is active)
-        // Save the error but continue to try to get the recording URI
         stopError = error;
-        console.warn('[MultiModalInput] Error stopping recorder:', error?.message);
-        
-        // Try to get URI even if stop failed
+        console.warn('[MultiModalInput] Error stopping legacy recorder:', error?.message);
         try {
           const status = recorder.getStatus();
           uri = status.url || recorder.uri;
         } catch (statusError) {
-          console.warn('[MultiModalInput] Could not get recorder status:', statusError);
+          console.warn('[MultiModalInput] Could not get legacy recorder status:', statusError);
         }
       }
 
-      // Clean up recorder reference
-      recorderRef.current = null;
+      legacyRecorderRef.current = null;
       recordingStartTimeRef.current = null;
+      recordingModeRef.current = null;
 
-      // Always try to reset audio mode, even if stop() failed
-      // Use a small delay to let the native audio session settle
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
       try {
-        await setAudioModeAsync({
-          allowsRecording: false,
-        });
+        await setAudioModeAsync({ allowsRecording: false });
       } catch (audioModeError) {
         console.warn('[MultiModalInput] Could not reset audio mode:', audioModeError);
       }
 
-      // If we have a URI, process the recording
       if (uri) {
-        const durationMs = startTime ? Date.now() - startTime : undefined;
-        const mimeType = getAudioMimeTypeFromUri(uri);
-        const fileExtension = uri.split('.').pop()?.toLowerCase();
-        console.log('[MultiModalInput] Audio recorded:', {
-          uri,
-          mimeType,
-          fileExtension,
-          platform: Platform.OS,
-          hadStopError: Boolean(stopError),
-        });
-        let base64Data: string | undefined;
-
-        try {
-          // NOTE: readAsStringAsync is from expo-file-system/legacy; suppress deprecation warning intentionally
-          // eslint-disable-next-line deprecation/deprecation
-          const rawBase64 = await readAsStringAsync(uri, {
-            encoding: 'base64',
-          });
-          base64Data = `data:${mimeType};base64,${rawBase64}`;
-          
-          if (__DEV__) {
-            console.log('[MultiModalInput] Audio file size:', {
-              base64Length: rawBase64.length,
-              estimatedSizeKB: Math.round((rawBase64.length * 0.75) / 1024), // base64 is ~33% larger than binary
-            });
-          }
-        } catch (readError) {
-          console.warn('[MultiModalInput] Failed to read audio file for base64:', readError);
-        }
-
-        if (__DEV__) {
-          console.log('[MultiModalInput] Recording saved:', {
-            uri,
-            durationMs,
-            platform: Platform.OS,
-            hasBase64: Boolean(base64Data),
-          });
-        }
-
-        // Provide recording result to parent component for processing
-        if (onVoiceRecorded) {
-          // Only set local state if prop is not provided (backward compatibility)
-          if (!isTranscribingProp) {
-            setIsTranscribingLocal(true);
-          }
-          try {
-            await onVoiceRecorded({
-              uri,
-              durationMs,
-              mimeType,
-              base64Data,
-            });
-          } catch (transcriptionError) {
-            console.error('[MultiModalInput] Voice processing error:', transcriptionError);
-            Alert.alert('Voice Error', 'Could not process voice recording. Please try again.');
-          } finally {
-            // Only clear local state if prop is not provided (backward compatibility)
-            if (!isTranscribingProp) {
-              setIsTranscribingLocal(false);
-            }
-          }
-        } else {
-          // Fallback: notify via onSendMessage with structured data
-          onSendMessage(base64Data ?? uri, 'voice');
-        }
+        await processRecordedAudio(uri);
       } else {
-        // If we couldn't get a URI, show the original error or a generic message
         if (stopError) {
-          const errorMsg = stopError.message || 'Unknown error';
-          // Check if this is an audio session conflict
-          if (errorMsg.includes('OSStatus error 561017449') || errorMsg.includes('561017449')) {
-            Alert.alert(
-              'Audio Session Conflict',
-              'The microphone is currently being used by another feature. Please try again or stop the active recording first.'
-            );
-          } else {
-            Alert.alert(
-              'Recording Error',
-              `Could not stop voice recording: ${errorMsg}`
-            );
-          }
+          Alert.alert(
+            'Recording Error',
+            `Could not stop voice recording: ${stopError.message || 'Unknown error'}`
+          );
         } else {
           Alert.alert('Recording Error', 'No audio file was created.');
         }
       }
     } catch (error: any) {
-      console.error('[MultiModalInput] Failed to stop recording:', error);
+      console.error('[MultiModalInput] Failed to stop legacy recording:', error);
       Alert.alert(
         'Recording Error',
         `Could not stop voice recording: ${error?.message || 'Unknown error'}`
       );
     } finally {
-      // Always clean up state, even if everything failed
+      isRecordingRef.current = false;
       setIsRecording(false);
       if (!isTranscribingProp) {
         setIsTranscribingLocal(false);
       }
-      recorderRef.current = null;
+      legacyRecorderRef.current = null;
       recordingStartTimeRef.current = null;
+      recordingModeRef.current = null;
 
-      // Notify parent that recording ended (to resume live transcription if needed)
       if (onVoiceRecordingEnd) {
         try {
           await onVoiceRecordingEnd();
@@ -625,7 +571,183 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         }
       }
     }
-  }, [onVoiceRecorded, onSendMessage, isTranscribingProp, onVoiceRecordingEnd]);
+  }, [onVoiceRecordingEnd, processRecordedAudio, isTranscribingProp]);
+
+  const clearSpeechListeners = useCallback(() => {
+    speechListenersRef.current.forEach((listener) => listener.remove());
+    speechListenersRef.current = [];
+  }, []);
+
+  const finalizeSpeechSession = useCallback(async () => {
+    clearSpeechListeners();
+    isStoppingRef.current = false;
+    recordingModeRef.current = null;
+
+    if (onVoiceRecordingEnd) {
+      try {
+        await onVoiceRecordingEnd();
+      } catch (err) {
+        console.warn('[MultiModalInput] Error in onVoiceRecordingEnd:', err);
+      }
+    }
+  }, [clearSpeechListeners, onVoiceRecordingEnd]);
+
+  const stopVoiceRecording = useCallback(async () => {
+    if (!isRecordingRef.current || isStoppingRef.current) return;
+
+    if (recordingModeRef.current === 'legacy') {
+      await stopLegacyRecording();
+      return;
+    }
+
+    isStoppingRef.current = true;
+    isRecordingRef.current = false;
+    setIsRecording(false);
+
+    if (__DEV__) {
+      console.log('[MultiModalInput] Stopping voice recording...');
+    }
+
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch (error: any) {
+      console.error('[MultiModalInput] Failed to stop speech recognition:', error);
+      Alert.alert(
+        'Recording Error',
+        `Could not stop voice recording: ${error?.message || 'Unknown error'}`
+      );
+      await finalizeSpeechSession();
+    }
+  }, [finalizeSpeechSession, stopLegacyRecording]);
+
+  const startVoiceRecording = useCallback(async () => {
+    try {
+      if (isRecordingRef.current) return;
+
+      // Notify parent that recording is starting (to pause live transcription if needed)
+      if (onVoiceRecordingStart) {
+        await onVoiceRecordingStart();
+      }
+
+      if (ExpoSpeechRecognitionModule.supportsRecording?.() === false) {
+        if (__DEV__) {
+          console.log('[MultiModalInput] Speech recording unsupported, falling back.');
+        }
+        await startLegacyRecording();
+        return;
+      }
+
+      const permissionResult = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permissionResult?.granted) {
+        Alert.alert(
+          'Permission Denied',
+          'Microphone and speech recognition access are required for voice input. Please enable them in Settings.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      clearSpeechListeners();
+      latestRecordingUriRef.current = null;
+      isStoppingRef.current = false;
+
+      const listeners = [
+        ExpoSpeechRecognitionModule.addListener('speechend', () => {
+          stopVoiceRecording();
+        }),
+        ExpoSpeechRecognitionModule.addListener('audioend', async (event: any) => {
+          const uri = event?.uri as string | undefined;
+          isRecordingRef.current = false;
+          setIsRecording(false);
+
+          if (uri) {
+            latestRecordingUriRef.current = uri;
+            await processRecordedAudio(uri);
+          } else {
+            Alert.alert('Recording Error', 'No audio was captured.');
+          }
+          await finalizeSpeechSession();
+        }),
+        ExpoSpeechRecognitionModule.addListener('error', async (event: any) => {
+          console.error('[MultiModalInput] Speech recognition error:', event);
+          isRecordingRef.current = false;
+          setIsRecording(false);
+          const errorMessage = event?.message || 'Speech recognition failed.';
+          Alert.alert('Recording Error', errorMessage);
+          await finalizeSpeechSession();
+          if (recordingModeRef.current === 'speech' && !latestRecordingUriRef.current) {
+            recordingModeRef.current = null;
+            await startLegacyRecording();
+          }
+        }),
+        ExpoSpeechRecognitionModule.addListener('end', async () => {
+          if (!latestRecordingUriRef.current) {
+            isRecordingRef.current = false;
+            setIsRecording(false);
+            await finalizeSpeechSession();
+          }
+        }),
+      ];
+
+      speechListenersRef.current = listeners;
+
+      const outputFileName = `${SPEECH_AUDIO_FILENAME_PREFIX}-${Date.now()}.wav`;
+      recordingModeRef.current = 'speech';
+      ExpoSpeechRecognitionModule.start({
+        lang: SPEECH_RECOGNITION_LANG,
+        interimResults: false,
+        continuous: false,
+        recordingOptions: {
+          persist: true,
+          outputFileName,
+        },
+      });
+
+      recordingStartTimeRef.current = Date.now();
+      isRecordingRef.current = true;
+      recordingModeRef.current = 'speech';
+      setIsRecording(true);
+
+      if (__DEV__) {
+        console.log(`[MultiModalInput] Speech recognition started on ${Platform.OS}`);
+      }
+    } catch (error: any) {
+      console.error('[MultiModalInput] Failed to start speech recognition:', error);
+
+      const errorMessage = error?.message || 'Unknown error';
+      const isSimulatorError =
+        errorMessage.includes('simulator') ||
+        errorMessage.includes('not available') ||
+        errorMessage.includes('emulator');
+
+      if (isSimulatorError) {
+        Alert.alert(
+          Platform.OS === 'ios' ? 'Simulator Limitation' : 'Emulator Limitation',
+          `Voice recording may not work properly on ${Platform.OS === 'ios' ? 'simulators' : 'emulators'}. Please test on a real device for full functionality.`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert('Recording Error', `Could not start voice recording: ${errorMessage}`);
+      }
+      isRecordingRef.current = false;
+      setIsRecording(false);
+      await finalizeSpeechSession();
+      await startLegacyRecording();
+    }
+  }, [
+    clearSpeechListeners,
+    finalizeSpeechSession,
+    onVoiceRecordingStart,
+    processRecordedAudio,
+    startLegacyRecording,
+    stopVoiceRecording,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearSpeechListeners();
+    };
+  }, [clearSpeechListeners]);
 
   const handleVoicePress = useCallback(() => {
     // Track events - differentiate between voice input and stopping agent response
