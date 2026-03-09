@@ -11,9 +11,9 @@ Pod::Spec.new do |s|
   s.author         = package['author']
   s.homepage       = package['homepage']
   s.platforms      = {
-    :ios => '15.1'
+    :ios => '15.2'
   }
-  s.swift_version  = '5.9'
+  s.swift_version  = '5.4'
   s.source         = { git: 'https://github.com/ashrafshaik543/expo-wearables-camera' }
   s.static_framework = true
 
@@ -24,8 +24,10 @@ Pod::Spec.new do |s|
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
+    'FRAMEWORK_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/Frameworks/MWDATCore.xcframework/ios-arm64" "${PODS_TARGET_SRCROOT}/Frameworks/MWDATCamera.xcframework/ios-arm64" "${PODS_TARGET_SRCROOT}/Frameworks/MWDATCore.xcframework/ios-arm64_x86_64-simulator" "${PODS_TARGET_SRCROOT}/Frameworks/MWDATCamera.xcframework/ios-arm64_x86_64-simulator"',
   }
 
   s.source_files = "**/*.{h,m,mm,swift,hpp,cpp}"
   s.exclude_files = "Frameworks/**"
+  s.public_header_files = []
 end

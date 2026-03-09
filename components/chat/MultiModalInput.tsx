@@ -206,7 +206,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   useEffect(() => {
     if (
-      Platform.OS !== 'android' ||
       !shouldMonitorWearables ||
       !ExpoWearablesCamera?.addListener
     ) {
@@ -224,7 +223,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   useEffect(() => {
     if (
-      Platform.OS !== 'android' ||
       wearablesInitAttemptedRef.current ||
       !ExpoWearablesCamera?.initialize ||
       !ExpoWearablesCamera?.startMonitoring ||
@@ -266,10 +264,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   const performMetaAiRegistration = useCallback(
     async (showSuccessMessage: boolean) => {
-      if (Platform.OS !== 'android') {
-        return;
-      }
-
       const wearablesModule = ExpoWearablesCamera;
       if (
         !wearablesModule?.initialize ||
@@ -886,15 +880,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   }, [mediaPicker, onImageSelected, pendingImages]);
 
   const handleConnectMetaAiPress = useCallback(async () => {
-    if (Platform.OS !== 'android') {
-      Alert.alert(
-        'Meta AI Unavailable',
-        'Meta AI registration is supported on Android only.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
     if (!ExpoWearablesCamera?.initialize) {
       Alert.alert(
         'Meta AI Unavailable',
@@ -912,15 +897,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       Alert.alert(
         'Image Limit Reached',
         'You can only attach up to 4 images at a time.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    if (Platform.OS !== 'android') {
-      Alert.alert(
-        'Glasses Camera Unavailable',
-        'Meta glasses camera is supported on Android only.',
         [{ text: 'OK' }]
       );
       return;
@@ -1127,23 +1103,21 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
       <View style={styles.actionsRow}>
         <View style={styles.mediaButtons}>
-          {Platform.OS === 'android' && (
-            <Pressable
-              style={[styles.connectButton, { backgroundColor: colors.backgroundSecondary }]}
-              onPress={handleConnectMetaAiPress}
-              disabled={
-                isLoading || isRecording || isTranscribing || disabled || isConnectingMeta
-              }>
-              {isConnectingMeta ? (
-                <ActivityIndicator size="small" color={colors.textSecondary} />
-              ) : (
-                <Ionicons name="link-outline" size={16} color={colors.textSecondary} />
-              )}
-              <ThemedText style={[styles.connectButtonText, { color: colors.textSecondary }]}>
-                {wearablesStatus?.registrationState === 'Registered' ? 'Connected' : 'Connect'}
-              </ThemedText>
-            </Pressable>
-          )}
+          <Pressable
+            style={[styles.connectButton, { backgroundColor: colors.backgroundSecondary }]}
+            onPress={handleConnectMetaAiPress}
+            disabled={
+              isLoading || isRecording || isTranscribing || disabled || isConnectingMeta
+            }>
+            {isConnectingMeta ? (
+              <ActivityIndicator size="small" color={colors.textSecondary} />
+            ) : (
+              <Ionicons name="link-outline" size={16} color={colors.textSecondary} />
+            )}
+            <ThemedText style={[styles.connectButtonText, { color: colors.textSecondary }]}>
+              {wearablesStatus?.registrationState === 'Registered' ? 'Connected' : 'Connect'}
+            </ThemedText>
+          </Pressable>
 
           {/* Voice Button */}
           <View style={styles.voiceButtonContainer}>
@@ -1196,14 +1170,12 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             <Ionicons name="camera-outline" size={18} color={colors.textSecondary} />
           </Pressable>
 
-          {Platform.OS === 'android' && (
-            <Pressable
-              style={[styles.iconButton, { backgroundColor: colors.backgroundSecondary }]}
-              onPress={handleGlassesCameraPress}
-              disabled={isLoading || isRecording || isTranscribing || disabled}>
-              <Ionicons name="glasses-outline" size={18} color={colors.textSecondary} />
-            </Pressable>
-          )}
+          <Pressable
+            style={[styles.iconButton, { backgroundColor: colors.backgroundSecondary }]}
+            onPress={handleGlassesCameraPress}
+            disabled={isLoading || isRecording || isTranscribing || disabled}>
+            <Ionicons name="glasses-outline" size={18} color={colors.textSecondary} />
+          </Pressable>
         </View>
 
         <Pressable
@@ -1225,7 +1197,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         </Pressable>
       </View>
 
-      {Platform.OS === 'android' && wearablesStatus?.lastError ? (
+      {wearablesStatus?.lastError ? (
         <ThemedText style={[styles.wearablesErrorText, { color: colors.textSecondary }]}>
           Meta AI error: {wearablesStatus.lastError}
         </ThemedText>
