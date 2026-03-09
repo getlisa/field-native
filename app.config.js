@@ -2,8 +2,8 @@ import 'dotenv/config';
 
 export default {
   expo: {
-    name: 'Clara Tech Copilot',
-    slug: 'field',
+    name: 'Clara Wearables',
+    slug: 'clara-wearables',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
@@ -11,7 +11,7 @@ export default {
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
     updates: {
-      url: 'https://u.expo.dev/dbcac3d2-0bae-4ccf-ae06-71eddb096c0c',
+      url: 'https://u.expo.dev/ac0aa9b7-6730-422c-9a98-522ce7151c0e',
     },
     ios: {
       supportsTablet: true,
@@ -134,7 +134,7 @@ export default {
     extra: {
       router: {},
       eas: {
-        projectId: 'dbcac3d2-0bae-4ccf-ae06-71eddb096c0c',
+        projectId: 'ac0aa9b7-6730-422c-9a98-522ce7151c0e',
       },
     },
   },

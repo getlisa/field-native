@@ -19,13 +19,35 @@ const STRIP_PREFIXES = [
   'com/facebook/common/util/',
 ];
 
+const STRIP_EXACT = new Set([
+  'com/facebook/jni/CppException.class',
+  'com/facebook/jni/CppSystemErrorException.class',
+  'com/facebook/jni/DestructorThread.class',
+  'com/facebook/jni/DestructorThread$1.class',
+  'com/facebook/jni/DestructorThread$Destructor.class',
+  'com/facebook/jni/DestructorThread$DestructorList.class',
+  'com/facebook/jni/DestructorThread$DestructorStack.class',
+  'com/facebook/jni/DestructorThread$Terminus.class',
+  'com/facebook/jni/ExceptionHelper.class',
+  'com/facebook/jni/HybridClassBase.class',
+  'com/facebook/jni/HybridData.class',
+  'com/facebook/jni/HybridData$Destructor.class',
+  'com/facebook/jni/IteratorHelper.class',
+  'com/facebook/jni/MapIteratorHelper.class',
+  'com/facebook/jni/NativeRunnable.class',
+  'com/facebook/jni/ThreadScopeSupport.class',
+  'com/facebook/jni/UnknownCppException.class',
+  'com/facebook/jni/annotations/DoNotStrip.class',
+  'com/facebook/jni/annotations/DoNotStripAny.class',
+]);
+
 // Classes to keep (Meta-specific / required by mwdat-core)
 const KEEP_EXACT = new Set([
   'com/facebook/jni/Countable.class',
   'com/facebook/jni/CpuCapabilitiesJni.class',
 ]);
 
-const KEEP_PREFIXES = ['com/facebook/common/collectlite/'];
+const KEEP_PREFIXES = ['com/facebook/common/collectlite/', 'com/facebook/jni/softerror/'];
 
 // Native libs are kept intact to match upstream behavior.
 const STRIP_NATIVE_PREFIXES = [];
@@ -65,6 +87,7 @@ function findOriginalAar() {
 function shouldStrip(entryName) {
   if (KEEP_EXACT.has(entryName)) return false;
   if (KEEP_PREFIXES.some((p) => entryName.startsWith(p))) return false;
+  if (STRIP_EXACT.has(entryName)) return true;
   return STRIP_PREFIXES.some((p) => entryName.startsWith(p));
 }
 

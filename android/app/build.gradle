@@ -132,11 +132,6 @@ android {
     }
 }
 
-// Avoid duplicate fbjni classes; mwdat-core provides these in its AAR
-configurations.all {
-    exclude group: "com.facebook.fbjni", module: "fbjni"
-}
-
 // Apply static values from `gradle.properties` to the `android.packagingOptions`
 // Accepts values in comma delimited lists, example:
 // android.packagingOptions.pickFirsts=/LICENSE,**/picasa.ini
@@ -160,9 +155,6 @@ configurations.all {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
-    implementation(project(":expo-wearables-camera"))
-    // Required by Meta Wearables DAT SDK
-    implementation("com.google.protobuf:protobuf-javalite:3.20.3")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

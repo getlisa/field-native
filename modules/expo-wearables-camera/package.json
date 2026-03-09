@@ -13,6 +13,7 @@
   "keywords": ["expo", "react-native", "meta", "wearables", "camera"],
   "homepage": "https://developers.meta.com/wearables/faq",
   "license": "MIT",
+  "author": "Clara Tech",
   "devDependencies": {
     "@types/react": "~19.1.0",
     "expo-module-scripts": "^5.0.8",

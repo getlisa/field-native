@@ -48,6 +48,7 @@ dependencies {
   implementation "androidx.security:security-crypto:1.1.0-alpha06"
   implementation "com.meta.wearable:mwdat-core:0.3.0"
   implementation "com.meta.wearable:mwdat-camera:0.3.0"
+  implementation "com.google.protobuf:protobuf-javalite:3.25.5"
   // Add this only if you actually use the mock device APIs:
   // implementation "com.meta.wearable:mwdat-mockdevice:0.3.0"
 }

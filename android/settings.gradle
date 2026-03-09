@@ -31,13 +31,9 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
 }
 expoAutolinking.useExpoModules()
 
-rootProject.name = 'Clara Tech Copilot'
+rootProject.name = 'Clara Wearables'
 
 expoAutolinking.useExpoVersionCatalog()
 
 include ':app'
 includeBuild(expoAutolinking.reactNativeGradlePlugin)
-
-// Ensure local Expo modules are part of the Gradle project for IDE/lints.
-include ':expo-wearables-camera'
-project(':expo-wearables-camera').projectDir = new File(rootProject.projectDir, '../modules/expo-wearables-camera/android')

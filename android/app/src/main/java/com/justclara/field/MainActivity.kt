@@ -3,7 +3,6 @@ import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -13,10 +12,6 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
-  companion object {
-    private const val TAG = "MainActivity"
-  }
-
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
@@ -66,15 +61,5 @@ class MainActivity : ReactActivity() {
       // Use the default back button implementation on Android S
       // because it's doing more than [Activity.moveTaskToBack] in fact.
       super.invokeDefaultOnBackPressed()
-  }
-
-  override fun onUserLeaveHint() {
-    // Avoid ReactActivityDelegate NPE when leaving to Meta AI.
-    // We intentionally do not call super here.
-    try {
-      // no-op
-    } catch (e: Exception) {
-      Log.w(TAG, "Ignoring onUserLeaveHint error", e)
-    }
   }
 }
