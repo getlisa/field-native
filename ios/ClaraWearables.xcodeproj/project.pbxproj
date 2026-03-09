@@ -147,6 +147,7 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
 				3462F5DCF705DAD82BC2381D /* [CP] Embed Pods Frameworks */,
+				B548B8A3BCCA015C0A0BB86C /* Embed MWDAT Frameworks */,
 			);
 			buildRules = (
 			);
@@ -313,6 +314,24 @@
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-ClaraWearables/Pods-ClaraWearables-resources.sh\"\n";
 			showEnvVarsInLog = 0;
+		};
+		B548B8A3BCCA015C0A0BB86C /* Embed MWDAT Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed MWDAT Frameworks";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "MWDAT_DIR=\"${PODS_ROOT}/../../modules/expo-wearables-camera/ios/Frameworks\"\nif [ \"${PLATFORM_NAME}\" == \"iphonesimulator\" ]; then\n  SLICE=\"ios-arm64_x86_64-simulator\"\nelse\n  SLICE=\"ios-arm64\"\nfi\nDEST=\"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nmkdir -p \"${DEST}\"\nrsync -av --delete \"${MWDAT_DIR}/MWDATCore.xcframework/${SLICE}/MWDATCore.framework\" \"${DEST}/\"\nrsync -av --delete \"${MWDAT_DIR}/MWDATCamera.xcframework/${SLICE}/MWDATCamera.framework\" \"${DEST}/\"\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" -a \"${CODE_SIGNING_REQUIRED:-}\" != \"NO\" -a \"${CODE_SIGNING_ALLOWED}\" != \"NO\" ]; then\n  /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements \"${DEST}/MWDATCore.framework\"\n  /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements \"${DEST}/MWDATCamera.framework\"\nfi\n";
 		};
 		D48596B32BD1AE2165127694 /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;

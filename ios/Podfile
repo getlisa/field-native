@@ -56,5 +56,38 @@ target 'ClaraWearables' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+
+    # Embed MWDATCore & MWDATCamera dynamic frameworks into the app bundle.
+    # CocoaPods doesn't embed vendored dynamic xcframeworks from static pods,
+    # so we add a custom build phase to copy and codesign them.
+    app_project = installer.aggregate_targets
+      .find { |t| t.label == 'Pods-ClaraWearables' }
+      &.user_project
+    if app_project
+      app_target = app_project.targets.find { |t| t.name == 'ClaraWearables' }
+      if app_target
+        phase_name = 'Embed MWDAT Frameworks'
+        unless app_target.shell_script_build_phases.any? { |p| p.name == phase_name }
+          phase = app_target.new_shell_script_build_phase(phase_name)
+          phase.shell_script = <<~SCRIPT
+            MWDAT_DIR="${PODS_ROOT}/../../modules/expo-wearables-camera/ios/Frameworks"
+            if [ "${PLATFORM_NAME}" == "iphonesimulator" ]; then
+              SLICE="ios-arm64_x86_64-simulator"
+            else
+              SLICE="ios-arm64"
+            fi
+            DEST="${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+            mkdir -p "${DEST}"
+            rsync -av --delete "${MWDAT_DIR}/MWDATCore.xcframework/${SLICE}/MWDATCore.framework" "${DEST}/"
+            rsync -av --delete "${MWDAT_DIR}/MWDATCamera.xcframework/${SLICE}/MWDATCamera.framework" "${DEST}/"
+            if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" -a "${CODE_SIGNING_REQUIRED:-}" != "NO" -a "${CODE_SIGNING_ALLOWED}" != "NO" ]; then
+              /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "${DEST}/MWDATCore.framework"
+              /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "${DEST}/MWDATCamera.framework"
+            fi
+          SCRIPT
+          app_project.save
+        end
+      end
+    end
   end
 end
