@@ -213,6 +213,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     }
 
     const subscription = ExpoWearablesCamera.addListener('onWearablesStatus', (event) => {
+      console.log('[MultiModalInput] onWearablesStatus event:', JSON.stringify(event));
       setWearablesStatus(event);
     });
 
@@ -244,6 +245,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         await ExpoWearablesCamera.initialize();
         await ExpoWearablesCamera.startMonitoring();
         const status = await ExpoWearablesCamera.getStatus();
+        console.log('[MultiModalInput] Initial wearables status:', JSON.stringify(status));
         setWearablesStatus(status);
         wearablesInitializedRef.current = true;
       } catch (error: any) {
@@ -291,6 +293,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         }
         await wearablesModule.startRegistration();
         const status = await wearablesModule.getStatus();
+        console.log('[MultiModalInput] Post-registration status:', JSON.stringify(status));
         setWearablesStatus(status);
         if (showSuccessMessage) {
           Alert.alert(

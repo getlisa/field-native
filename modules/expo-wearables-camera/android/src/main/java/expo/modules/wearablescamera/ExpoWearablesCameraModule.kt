@@ -133,6 +133,9 @@ class ExpoWearablesCameraModule : Module() {
             launch {
               try {
                 Wearables.registrationState.collect { state ->
+                  val oldName = lastRegistrationState::class.simpleName ?: "Unknown"
+                  val newName = state::class.simpleName ?: "Unknown"
+                  Log.i(TAG, "registrationState changed: $oldName -> $newName")
                   lastRegistrationState = state
                   emitStatus()
                 }
@@ -194,11 +197,14 @@ class ExpoWearablesCameraModule : Module() {
       scope.launch {
         try {
           ensureInitialized()
+          val currentState = lastRegistrationState::class.simpleName ?: "Unknown"
+          Log.i(TAG, "startRegistration called, current state: $currentState")
           val context = appContext.reactContext ?: throw IllegalStateException("Missing context")
-          // Kick off registration flow; UI will complete in Meta AI app.
           Wearables.startRegistration(context)
+          Log.i(TAG, "startRegistration succeeded, awaiting callback from Meta AI")
           promise.resolve(null)
         } catch (e: Exception) {
+          Log.e(TAG, "startRegistration error: ${e.message}", e)
           promise.reject(
             "REGISTRATION_ERROR",
             "Failed to start registration with Meta AI: ${e.message}",
@@ -463,10 +469,12 @@ class ExpoWearablesCameraModule : Module() {
   }
 
   private fun emitStatus() {
+    val stateName = lastRegistrationState::class.simpleName ?: "Unknown"
+    Log.i(TAG, "emitStatus: registrationState=$stateName, hasActiveDevice=$hasActiveDevice, lastError=$lastError")
     sendEvent(
       "onWearablesStatus",
       bundleOf(
-        "registrationState" to (lastRegistrationState::class.simpleName ?: "Unknown"),
+        "registrationState" to stateName,
         "registrationStateDetail" to lastRegistrationState.toString(),
         "hasActiveDevice" to hasActiveDevice,
         "lastError" to lastError

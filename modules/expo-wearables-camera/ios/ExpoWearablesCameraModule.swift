@@ -78,13 +78,18 @@ public class ExpoWearablesCameraModule: Module {
       Task { @MainActor in
         do {
           try self.initializeSDK()
-          if Wearables.shared.registrationState == .registered {
+          let currentState = Wearables.shared.registrationState
+          print("[ExpoWearablesCamera] startRegistration called, current state: \(self.registrationStateName(currentState))")
+          if currentState == .registered {
+            print("[ExpoWearablesCamera] Already registered, resolving immediately")
             promise.resolve(nil)
             return
           }
           try Wearables.shared.startRegistration()
+          print("[ExpoWearablesCamera] startRegistration succeeded, awaiting callback from Meta AI")
           promise.resolve(nil)
         } catch {
+          print("[ExpoWearablesCamera] startRegistration error: \(error)")
           self.lastError = error.localizedDescription
           promise.reject("REGISTRATION_ERROR", "Failed to start registration with Meta AI: \(error.localizedDescription)")
         }
@@ -123,7 +128,7 @@ public class ExpoWearablesCameraModule: Module {
     }
 
     AsyncFunction("getRegistrationState") { (promise: Promise) in
-      promise.resolve(String(describing: self.lastRegistrationState))
+      promise.resolve(self.registrationStateName(self.lastRegistrationState))
     }
 
     AsyncFunction("capturePhotoToTempFile") { (promise: Promise) in
@@ -184,6 +189,9 @@ public class ExpoWearablesCameraModule: Module {
       wearables.addRegistrationStateListener { [weak self] state in
         Task { @MainActor [weak self] in
           guard let self else { return }
+          let oldName = self.registrationStateName(self.lastRegistrationState)
+          let newName = self.registrationStateName(state)
+          print("[ExpoWearablesCamera] registrationState changed: \(oldName) -> \(newName)")
           self.lastRegistrationState = state
           self.emitStatus()
         }
@@ -202,9 +210,19 @@ public class ExpoWearablesCameraModule: Module {
 
   // MARK: - Status
 
+  private func registrationStateName(_ state: MWDATCore.RegistrationState) -> String {
+    switch state {
+    case .unavailable: return "Unavailable"
+    case .available: return "Available"
+    case .registering: return "Registering"
+    case .registered: return "Registered"
+    @unknown default: return "Unknown"
+    }
+  }
+
   private func statusPayload() -> [String: Any] {
     [
-      "registrationState": String(describing: lastRegistrationState),
+      "registrationState": registrationStateName(lastRegistrationState),
       "registrationStateDetail": lastRegistrationState.description,
       "hasActiveDevice": hasActiveDevice,
       "lastError": lastError as Any,
@@ -212,7 +230,9 @@ public class ExpoWearablesCameraModule: Module {
   }
 
   private func emitStatus() {
-    sendEvent("onWearablesStatus", statusPayload())
+    let payload = statusPayload()
+    print("[ExpoWearablesCamera] emitStatus: registrationState=\(payload["registrationState"] ?? "nil"), hasActiveDevice=\(payload["hasActiveDevice"] ?? "nil"), lastError=\(payload["lastError"] ?? "nil")")
+    sendEvent("onWearablesStatus", payload)
   }
 
   // MARK: - Permissions
