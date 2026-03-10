@@ -91,6 +91,24 @@ public class ExpoWearablesCameraModule: Module {
       }
     }
 
+    AsyncFunction("handleUrl") { (urlString: String, promise: Promise) in
+      Task { @MainActor in
+        do {
+          try self.initializeSDK()
+          guard let url = URL(string: urlString) else {
+            promise.resolve(false)
+            return
+          }
+          let handled = try await Wearables.shared.handleUrl(url)
+          print("####URL handled:#### \(handled)")
+          promise.resolve(handled)
+        } catch {
+          self.lastError = error.localizedDescription
+          promise.reject("HANDLE_URL_ERROR", "Failed to handle URL: \(error.localizedDescription)")
+        }
+      }
+    }
+
     AsyncFunction("awaitRegistration") { (promise: Promise) in
       Task { @MainActor in
         do {

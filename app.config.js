@@ -34,8 +34,17 @@ export default {
         NSBluetoothAlwaysUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
         NSBluetoothPeripheralUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
 
-        // Background audio mode (for continuous recording)
-        UIBackgroundModes: ['audio'],
+        // Meta Wearables DAT SDK configuration
+        MWDAT: {
+          AppLinkURLScheme: 'field://',
+          MetaAppID: '',
+        },
+
+        // External Accessory protocol for Meta glasses
+        UISupportedExternalAccessoryProtocols: ['com.meta.ar.wearable'],
+
+        // Background modes (audio recording + Meta glasses Bluetooth/accessory)
+        UIBackgroundModes: ['audio', 'bluetooth-peripheral', 'external-accessory'],
       },
       bundleIdentifier: 'com.justclara.field',
       usesNonExemptEncryption: false,
