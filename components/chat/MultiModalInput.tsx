@@ -177,6 +177,59 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
       };
     }
 
+    // PermissionError.metaAINotInstalled - SDK cannot open Meta AI (see Meta docs PermissionError)
+    // Developer Mode: no MetaAppID needed; enable in Meta AI app Settings
+    if (
+      message.includes('Cannot reach Meta AI') ||
+      message.includes('metaAINotInstalled') ||
+      message.includes('not installed')
+    ) {
+      return {
+        title: 'Meta AI App Required',
+        message:
+          'Install or update the Meta AI app from the App Store, enable Developer Mode in Meta AI Settings, and ensure your glasses are paired.',
+      };
+    }
+
+    // PermissionError.noDevice / noDeviceWithConnection
+    if (
+      message.includes('No wearable device') ||
+      message.includes('disconnected') ||
+      message.includes('powered off')
+    ) {
+      return {
+        title: 'Glasses Not Connected',
+        message:
+          'Your glasses may be off or out of range. Turn them on and bring them closer.',
+      };
+    }
+
+    // PermissionError.connectionError
+    if (message.includes('Connection error') || message.includes('connectionError')) {
+      return {
+        title: 'Connection Error',
+        message:
+          'Device connection error. Ensure glasses are on and connected, then try again.',
+      };
+    }
+
+    // PermissionError.requestTimeout
+    if (message.includes('timed out') || message.includes('requestTimeout')) {
+      return {
+        title: 'Connection Timeout',
+        message:
+          'The glasses took too long to respond. Ensure they are on, nearby, and camera permission is granted in Meta AI.',
+      };
+    }
+
+    // PermissionError.requestInProgress
+    if (message.includes('already in progress') || message.includes('requestInProgress')) {
+      return {
+        title: 'Request In Progress',
+        message: 'A permission request is already in progress. Please wait.',
+      };
+    }
+
     return null;
   };
 
@@ -936,6 +989,14 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         Alert.alert(
           'Not Connected',
           'Please tap “Connect Meta AI” before using the glasses camera.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      if (!status?.hasActiveDevice) {
+        Alert.alert(
+          'Glasses Not Ready',
+          'Put on your glasses and ensure they are connected. If you just granted camera permission, wait a few seconds and try again.',
           [{ text: 'OK' }]
         );
         return;

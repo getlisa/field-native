@@ -34,14 +34,28 @@ export default {
         NSBluetoothAlwaysUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
         NSBluetoothPeripheralUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
 
-        // Meta Wearables DAT SDK configuration
+        // Meta Wearables DAT SDK - Developer Mode (no MetaAppID/ClientToken/TeamID required)
+        // See https://wearables.developer.meta.com/docs/build-integration-ios/
+        // For production/release channels, add MetaAppID, ClientToken, TeamID from Wearables Developer Center
         MWDAT: {
           AppLinkURLScheme: 'field://',
-          MetaAppID: '',
+          MetaAppID: '', // Empty = Developer Mode; enable Developer Mode in Meta AI app Settings
         },
 
         // Allow querying Meta AI app URL schemes (required for canOpenURL on iOS 9+)
-        LSApplicationQueriesSchemes: ['metaai', 'fb-orca'],
+        // Meta AI/View app uses fb-viewapp:// - see meta-wearables-dat-ios discussion #98
+        LSApplicationQueriesSchemes: [
+          'fb-viewapp',
+          'metaai',
+          'fb-orca',
+          'orca',
+          'fb',
+          'fbapi',
+          'fb-messenger',
+          'fb-messenger-api',
+          'fb-messenger-api20140430',
+          'fb-messenger-share-api',
+        ],
 
         // External Accessory protocol for Meta glasses
         UISupportedExternalAccessoryProtocols: ['com.meta.ar.wearable'],

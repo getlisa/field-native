@@ -26,7 +26,7 @@
 		B6F2E357504809A764DD2D2A /* Pods-ClaraWearables.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ClaraWearables.release.xcconfig"; path = "Target Support Files/Pods-ClaraWearables/Pods-ClaraWearables.release.xcconfig"; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
 		BCF0A1E140ADAF71C395A4F9 /* libPods-ClaraWearables.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ClaraWearables.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		C315214CDC351C308CBAA684 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = ClaraWearables/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		C315214CDC351C308CBAA684 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ClaraWearables/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ClaraWearables/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* ClaraWearables-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "ClaraWearables-Bridging-Header.h"; path = "ClaraWearables/ClaraWearables-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -103,7 +103,6 @@
 				A79FD529C18AF6FADA78EB98 /* Pods-ClaraWearables.debug.xcconfig */,
 				B6F2E357504809A764DD2D2A /* Pods-ClaraWearables.release.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
@@ -380,6 +379,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = ClaraWearables/ClaraWearables.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TS3BFX5G72;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -416,6 +416,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = ClaraWearables/ClaraWearables.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TS3BFX5G72;
 				INFOPLIST_FILE = ClaraWearables/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (

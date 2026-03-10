@@ -44,8 +44,16 @@
     <string>12.0</string>
     <key>LSApplicationQueriesSchemes</key>
     <array>
+      <string>fb-viewapp</string>
       <string>metaai</string>
       <string>fb-orca</string>
+      <string>orca</string>
+      <string>fb</string>
+      <string>fbapi</string>
+      <string>fb-messenger</string>
+      <string>fb-messenger-api</string>
+      <string>fb-messenger-api20140430</string>
+      <string>fb-messenger-share-api</string>
     </array>
     <key>LSRequiresIPhoneOS</key>
     <true/>
@@ -76,6 +84,7 @@
     </array>
     <key>RCTNewArchEnabled</key>
     <true/>
+    <!-- Meta Wearables DAT - Developer Mode: MetaAppID empty, no ClientToken/TeamID -->
     <key>MWDAT</key>
     <dict>
       <key>AppLinkURLScheme</key>

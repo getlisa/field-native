@@ -9,7 +9,9 @@ public class ExpoWearablesCameraModule: Module {
     case timedOut
   }
 
-  private let deviceTimeoutSeconds: TimeInterval = 8.0
+  private let deviceWaitTimeoutSeconds: TimeInterval = 45.0
+  private let streamTimeoutSeconds: TimeInterval = 45.0
+  private let photoTimeoutSeconds: TimeInterval = 45.0
   private var isInitialized = false
   private var monitoringTask: Task<Void, Never>?
   private var registrationListenerToken: (any MWDATCore.AnyListenerToken)?
@@ -17,12 +19,19 @@ public class ExpoWearablesCameraModule: Module {
   private var lastRegistrationState: MWDATCore.RegistrationState = .unavailable
   private var hasActiveDevice = false
   private var lastError: String?
+  private var streamSession: MWDATCamera.StreamSession?
 
   public func definition() -> ModuleDefinition {
     Name("ExpoWearablesCamera")
     Events("onWearablesStatus")
 
     OnDestroy {
+      Task { @MainActor in
+        if let session = self.streamSession {
+          await session.stop()
+        }
+        self.streamSession = nil
+      }
       self.monitoringTask?.cancel()
       self.monitoringTask = nil
       self.registrationListenerToken = nil
@@ -70,6 +79,10 @@ public class ExpoWearablesCameraModule: Module {
         } catch let error as MWDATCore.PermissionError {
           let message = self.permissionErrorMessage(error)
           print("[ExpoWearablesCamera] requestWearablesCameraPermission PermissionError: \(message)")
+          self.lastError = message
+          promise.reject("PERMISSION_ERROR", message)
+        } catch is TimeoutError {
+          let message = "Permission request timed out. Complete the prompt in Meta AI and try again."
           self.lastError = message
           promise.reject("PERMISSION_ERROR", message)
         } catch {
@@ -125,6 +138,10 @@ public class ExpoWearablesCameraModule: Module {
           try self.initializeSDK()
           try await self.ensureRegistered()
           promise.resolve(nil)
+        } catch is TimeoutError {
+          let message = "Registration timed out. Complete the flow in Meta AI and return to the app."
+          self.lastError = message
+          promise.reject("REGISTRATION_WAIT_ERROR", message)
         } catch {
           self.lastError = error.localizedDescription
           promise.reject("REGISTRATION_WAIT_ERROR", "Failed while waiting for registration: \(error.localizedDescription)")
@@ -156,6 +173,14 @@ public class ExpoWearablesCameraModule: Module {
           print("[ExpoWearablesCamera] capturePhotoToTempFile PermissionError: \(message)")
           self.lastError = message
           promise.reject("PERMISSION_ERROR", message)
+        } catch is TimeoutError {
+          let message = "Capture timed out. Ensure glasses are on, nearby, and camera permission is granted in Meta AI."
+          self.lastError = message
+          promise.reject("CAPTURE_ERROR", message)
+        } catch let error as MWDATCamera.StreamSessionError {
+          let message = self.streamSessionErrorMessage(error)
+          self.lastError = message
+          promise.reject("CAPTURE_ERROR", message)
         } catch {
           self.lastError = error.localizedDescription
           promise.reject("CAPTURE_ERROR", "Failed to capture photo: \(error.localizedDescription)")
@@ -203,6 +228,7 @@ public class ExpoWearablesCameraModule: Module {
           let newName = self.registrationStateName(state)
           print("[ExpoWearablesCamera] registrationState changed: \(oldName) -> \(newName)")
           self.lastRegistrationState = state
+          await self.updateStreamSessionIfNeeded()
           self.emitStatus()
         }
       }
@@ -211,11 +237,17 @@ public class ExpoWearablesCameraModule: Module {
       for await deviceId in selector.activeDeviceStream() {
         guard let self else { return }
         self.hasActiveDevice = deviceId != nil
+        Task { @MainActor in
+          await self.updateStreamSessionIfNeeded()
+        }
         self.emitStatus()
       }
     }
 
-    emitStatus()
+    Task { @MainActor in
+      await self.updateStreamSessionIfNeeded()
+      self.emitStatus()
+    }
   }
 
   // MARK: - Status
@@ -243,6 +275,19 @@ public class ExpoWearablesCameraModule: Module {
     }
   }
 
+  private func streamSessionErrorMessage(_ error: MWDATCamera.StreamSessionError) -> String {
+    switch error {
+    case .deviceNotFound: return "No active device found. Ensure glasses are on and camera permission is granted in Meta AI."
+    case .deviceNotConnected: return "Device disconnected. Ensure glasses are on and nearby."
+    case .timeout: return "Stream or capture timed out. Ensure glasses are on, nearby, and try again."
+    case .videoStreamingError: return "Video streaming error. Try again."
+    case .audioStreamingError: return "Audio streaming error. Try again."
+    case .permissionDenied: return "Camera permission not granted in Meta AI."
+    case .internalError: return "Internal streaming error. Try again."
+    @unknown default: return "Stream error: \(error.localizedDescription)"
+    }
+  }
+
   private func statusPayload() -> [String: Any] {
     [
       "registrationState": registrationStateName(lastRegistrationState),
@@ -256,6 +301,37 @@ public class ExpoWearablesCameraModule: Module {
     let payload = statusPayload()
     print("[ExpoWearablesCamera] emitStatus: registrationState=\(payload["registrationState"] ?? "nil"), hasActiveDevice=\(payload["hasActiveDevice"] ?? "nil"), lastError=\(payload["lastError"] ?? "nil")")
     sendEvent("onWearablesStatus", payload)
+  }
+
+  @MainActor
+  private func updateStreamSessionIfNeeded() async {
+    let shouldHaveSession = (lastRegistrationState == .registered && hasActiveDevice)
+    guard let selector = deviceSelector else { return }
+
+    if !shouldHaveSession {
+      if let session = streamSession {
+        print("[ExpoWearablesCamera] Stopping session (device disconnected or not registered)")
+        await session.stop()
+        streamSession = nil
+      }
+      return
+    }
+
+    if streamSession != nil { return }
+
+    print("[ExpoWearablesCamera] Pre-starting stream session for faster capture")
+    let config = MWDATCamera.StreamSessionConfig(videoCodec: .raw, resolution: .low, frameRate: 24)
+    let session = MWDATCamera.StreamSession(streamSessionConfig: config, deviceSelector: selector)
+    streamSession = session
+
+    do {
+      await session.start()
+      try await waitForStreamState(session, state: .streaming, timeout: streamTimeoutSeconds)
+      print("[ExpoWearablesCamera] Stream session ready for capture")
+    } catch {
+      print("[ExpoWearablesCamera] Pre-start session failed: \(error), will create on-demand")
+      streamSession = nil
+    }
   }
 
   // MARK: - Permissions
@@ -282,7 +358,7 @@ public class ExpoWearablesCameraModule: Module {
       return
     }
 
-    try await withTimeout(deviceTimeoutSeconds) {
+    try await withTimeout(deviceWaitTimeoutSeconds) {
       for await state in stream {
         if state == .registered { return }
       }
@@ -294,9 +370,37 @@ public class ExpoWearablesCameraModule: Module {
 
   @MainActor
   private func capturePhotoToTempFile() async throws -> [String: Any] {
+    // Use pre-started session if available and streaming (matches Meta SDK sample pattern)
+    if let session = streamSession, session.state == .streaming {
+      guard session.capturePhoto(format: .jpeg) else {
+        // Invalidate cached session so next capture uses fresh one
+        await session.stop()
+        streamSession = nil
+        throw NSError(domain: "ExpoWearablesCamera", code: 2, userInfo: [
+          NSLocalizedDescriptionKey: "Photo capture request failed",
+        ])
+      }
+      do {
+        let photoData = try await waitForPhotoData(session, timeout: photoTimeoutSeconds)
+        return try writePhotoToTempFile(photoData)
+      } catch {
+        // Capture failed (e.g. timeout); invalidate session so next capture uses fresh one
+        await session.stop()
+        streamSession = nil
+        throw error
+      }
+    }
+
+    // Fallback: create new session. Clear any stale cached session first to avoid device conflict.
+    if let session = streamSession {
+      print("[ExpoWearablesCamera] Cached session not ready, stopping before new capture")
+      await session.stop()
+      streamSession = nil
+    }
+
     let wearables = Wearables.shared
-    let selector = MWDATCore.AutoDeviceSelector(wearables: wearables)
-    _ = try await waitForActiveDevice(selector: selector, timeout: deviceTimeoutSeconds)
+    let selector = deviceSelector ?? MWDATCore.AutoDeviceSelector(wearables: wearables)
+    _ = try await waitForActiveDevice(selector: selector, timeout: deviceWaitTimeoutSeconds)
 
     let config = MWDATCamera.StreamSessionConfig(videoCodec: .raw, resolution: .low, frameRate: 24)
     let session = MWDATCamera.StreamSession(streamSessionConfig: config, deviceSelector: selector)
@@ -304,7 +408,7 @@ public class ExpoWearablesCameraModule: Module {
     await session.start()
 
     do {
-      try await waitForStreamState(session, state: .streaming, timeout: deviceTimeoutSeconds)
+      try await waitForStreamState(session, state: .streaming, timeout: streamTimeoutSeconds)
 
       guard session.capturePhoto(format: .jpeg) else {
         await session.stop()
@@ -313,8 +417,9 @@ public class ExpoWearablesCameraModule: Module {
         ])
       }
 
-      let photoData = try await waitForPhotoData(session, timeout: deviceTimeoutSeconds)
-      await session.stop()
+      let photoData = try await waitForPhotoData(session, timeout: photoTimeoutSeconds)
+      // Keep session alive for subsequent captures (matches Meta SDK sample - session stays until disconnect)
+      streamSession = session
       return try writePhotoToTempFile(photoData)
     } catch {
       await session.stop()
