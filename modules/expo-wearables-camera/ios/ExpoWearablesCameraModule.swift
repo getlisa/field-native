@@ -78,6 +78,10 @@ public class ExpoWearablesCameraModule: Module {
       Task { @MainActor in
         do {
           try self.initializeSDK()
+          if Wearables.shared.registrationState == .registered {
+            promise.resolve(nil)
+            return
+          }
           try Wearables.shared.startRegistration()
           promise.resolve(nil)
         } catch {
@@ -211,7 +215,11 @@ public class ExpoWearablesCameraModule: Module {
     if wearables.registrationState == .registered { return }
 
     let stream = wearables.registrationStateStream()
-    try wearables.startRegistration()
+    do {
+      try wearables.startRegistration()
+    } catch let error as MWDATCore.RegistrationError where error == .alreadyRegistered {
+      return
+    }
 
     try await withTimeout(deviceTimeoutSeconds) {
       for await state in stream {

@@ -30,6 +30,10 @@ export default {
         NSPhotoLibraryUsageDescription: 'This app needs access to your photo library to select images for job documentation.',
         NSPhotoLibraryAddUsageDescription: 'This app needs permission to save photos to your photo library.',
         
+        // Bluetooth permission (for Meta glasses communication)
+        NSBluetoothAlwaysUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
+        NSBluetoothPeripheralUsageDescription: 'This app needs Bluetooth access to connect and communicate with Meta smart glasses.',
+
         // Background audio mode (for continuous recording)
         UIBackgroundModes: ['audio'],
       },
