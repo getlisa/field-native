@@ -67,6 +67,11 @@ public class ExpoWearablesCameraModule: Module {
           try self.initializeSDK()
           let status = try await self.ensureCameraPermission()
           promise.resolve(status == .granted ? "granted" : "denied")
+        } catch let error as MWDATCore.PermissionError {
+          let message = self.permissionErrorMessage(error)
+          print("[ExpoWearablesCamera] requestWearablesCameraPermission PermissionError: \(message)")
+          self.lastError = message
+          promise.reject("PERMISSION_ERROR", message)
         } catch {
           self.lastError = error.localizedDescription
           promise.reject("PERMISSION_ERROR", "Failed to request camera permission: \(error.localizedDescription)")
@@ -146,6 +151,11 @@ public class ExpoWearablesCameraModule: Module {
 
           let result = try await self.capturePhotoToTempFile()
           promise.resolve(result)
+        } catch let error as MWDATCore.PermissionError {
+          let message = self.permissionErrorMessage(error)
+          print("[ExpoWearablesCamera] capturePhotoToTempFile PermissionError: \(message)")
+          self.lastError = message
+          promise.reject("PERMISSION_ERROR", message)
         } catch {
           self.lastError = error.localizedDescription
           promise.reject("CAPTURE_ERROR", "Failed to capture photo: \(error.localizedDescription)")
@@ -217,6 +227,19 @@ public class ExpoWearablesCameraModule: Module {
     case .registering: return "Registering"
     case .registered: return "Registered"
     @unknown default: return "Unknown"
+    }
+  }
+
+  private func permissionErrorMessage(_ error: MWDATCore.PermissionError) -> String {
+    switch error {
+    case .noDevice: return "No wearable device found. Ensure glasses are paired."
+    case .noDeviceWithConnection: return "Device is disconnected or powered off."
+    case .connectionError: return "Connection error communicating with device."
+    case .metaAINotInstalled: return "Cannot reach Meta AI app. Ensure it is installed and updated."
+    case .requestInProgress: return "A permission request is already in progress."
+    case .requestTimeout: return "Permission request timed out."
+    case .internalError: return "Internal SDK error occurred."
+    @unknown default: return "Unknown permission error: \(error.localizedDescription)"
     }
   }
 

@@ -40,7 +40,13 @@ public class AppDelegate: ExpoAppDelegate {
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
     Task { @MainActor in
-      try? await Wearables.shared.handleUrl(url)
+      print("[AppDelegate] Received URL: \(url)")
+      do {
+        let handled = try await Wearables.shared.handleUrl(url)
+        print("[AppDelegate] handleUrl result: \(handled)")
+      } catch {
+        print("[AppDelegate] handleUrl error: \(error)")
+      }
     }
     return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
   }

@@ -40,6 +40,9 @@ export default {
           MetaAppID: '',
         },
 
+        // Allow querying Meta AI app URL schemes (required for canOpenURL on iOS 9+)
+        LSApplicationQueriesSchemes: ['metaai', 'fb-orca'],
+
         // External Accessory protocol for Meta glasses
         UISupportedExternalAccessoryProtocols: ['com.meta.ar.wearable'],
 
