@@ -7,7 +7,7 @@ export default {
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
-    scheme: 'field',
+    scheme: 'claraglasses',
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
     updates: {
@@ -38,7 +38,7 @@ export default {
         // See https://wearables.developer.meta.com/docs/build-integration-ios/
         // For production/release channels, add MetaAppID, ClientToken, TeamID from Wearables Developer Center
         MWDAT: {
-          AppLinkURLScheme: 'field://',
+          AppLinkURLScheme: 'claraglasses://',
           MetaAppID: '', // Empty = Developer Mode; enable Developer Mode in Meta AI app Settings
         },
 

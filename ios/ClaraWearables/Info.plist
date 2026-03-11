@@ -27,7 +27,7 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>field</string>
+          <string>claraglasses</string>
           <string>com.claraglasses.field</string>
         </array>
       </dict>
@@ -88,7 +88,7 @@
     <key>MWDAT</key>
     <dict>
       <key>AppLinkURLScheme</key>
-      <string>field://</string>
+      <string>claraglasses://</string>
       <key>MetaAppID</key>
       <string></string>
     </dict>

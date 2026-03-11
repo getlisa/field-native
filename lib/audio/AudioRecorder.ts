@@ -37,7 +37,7 @@ try {
 
 // Helper function to create background task options with job ID
 const createBackgroundTaskOptions = (jobId?: string) => {
-  const linkingURI = jobId ? `field://jobs/${jobId}` : 'field://';
+  const linkingURI = jobId ? `claraglasses://jobs/${jobId}` : 'claraglasses://';
   
   if (__DEV__) {
     console.log('[Audio] Creating background task options:', {
