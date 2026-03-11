@@ -63,7 +63,7 @@ export default {
         // Background modes (audio recording + Meta glasses Bluetooth/accessory)
         UIBackgroundModes: ['audio', 'bluetooth-peripheral', 'external-accessory'],
       },
-      bundleIdentifier: 'com.justclara.field',
+      bundleIdentifier: 'com.claraglasses.field',
       usesNonExemptEncryption: false,
     },
     android: {

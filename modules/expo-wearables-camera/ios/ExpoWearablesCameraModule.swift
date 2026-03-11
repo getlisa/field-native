@@ -20,6 +20,7 @@ public class ExpoWearablesCameraModule: Module {
   private var hasActiveDevice = false
   private var lastError: String?
   private var streamSession: MWDATCamera.StreamSession?
+  private var isCapturing = false
 
   public func definition() -> ModuleDefinition {
     Name("ExpoWearablesCamera")
@@ -228,7 +229,7 @@ public class ExpoWearablesCameraModule: Module {
           let newName = self.registrationStateName(state)
           print("[ExpoWearablesCamera] registrationState changed: \(oldName) -> \(newName)")
           self.lastRegistrationState = state
-          await self.updateStreamSessionIfNeeded()
+          await self.teardownSessionIfNeeded()
           self.emitStatus()
         }
       }
@@ -238,14 +239,14 @@ public class ExpoWearablesCameraModule: Module {
         guard let self else { return }
         self.hasActiveDevice = deviceId != nil
         Task { @MainActor in
-          await self.updateStreamSessionIfNeeded()
+          await self.teardownSessionIfNeeded()
         }
         self.emitStatus()
       }
     }
 
     Task { @MainActor in
-      await self.updateStreamSessionIfNeeded()
+      await self.teardownSessionIfNeeded()
       self.emitStatus()
     }
   }
@@ -303,33 +304,18 @@ public class ExpoWearablesCameraModule: Module {
     sendEvent("onWearablesStatus", payload)
   }
 
+  // Only tears down the session when the device disconnects or registration is lost.
+  // Does NOT pre-start sessions — that caused conflicts with the capture flow.
   @MainActor
-  private func updateStreamSessionIfNeeded() async {
-    let shouldHaveSession = (lastRegistrationState == .registered && hasActiveDevice)
-    guard let selector = deviceSelector else { return }
-
-    if !shouldHaveSession {
-      if let session = streamSession {
-        print("[ExpoWearablesCamera] Stopping session (device disconnected or not registered)")
-        await session.stop()
-        streamSession = nil
-      }
+  private func teardownSessionIfNeeded() async {
+    if isCapturing {
+      print("[ExpoWearablesCamera] Skipping teardown — capture in progress")
       return
     }
-
-    if streamSession != nil { return }
-
-    print("[ExpoWearablesCamera] Pre-starting stream session for faster capture")
-    let config = MWDATCamera.StreamSessionConfig(videoCodec: .raw, resolution: .low, frameRate: 24)
-    let session = MWDATCamera.StreamSession(streamSessionConfig: config, deviceSelector: selector)
-    streamSession = session
-
-    do {
-      await session.start()
-      try await waitForStreamState(session, state: .streaming, timeout: streamTimeoutSeconds)
-      print("[ExpoWearablesCamera] Stream session ready for capture")
-    } catch {
-      print("[ExpoWearablesCamera] Pre-start session failed: \(error), will create on-demand")
+    let shouldHaveSession = (lastRegistrationState == .registered && hasActiveDevice)
+    if !shouldHaveSession, let session = streamSession {
+      print("[ExpoWearablesCamera] Stopping session (device disconnected or not registered)")
+      await session.stop()
       streamSession = nil
     }
   }
@@ -368,61 +354,51 @@ public class ExpoWearablesCameraModule: Module {
 
   // MARK: - Photo Capture
 
+  // Fully self-contained: each call stops any leftover session, creates a fresh
+  // one, starts it, captures a photo, and stops. This guarantees every tap gets
+  // a clean session and avoids stale-session problems on repeated captures.
   @MainActor
   private func capturePhotoToTempFile() async throws -> [String: Any] {
-    // Use pre-started session if available and streaming (matches Meta SDK sample pattern)
-    if let session = streamSession, session.state == .streaming {
-      guard session.capturePhoto(format: .jpeg) else {
-        // Invalidate cached session so next capture uses fresh one
-        await session.stop()
-        streamSession = nil
-        throw NSError(domain: "ExpoWearablesCamera", code: 2, userInfo: [
-          NSLocalizedDescriptionKey: "Photo capture request failed",
-        ])
-      }
-      do {
-        let photoData = try await waitForPhotoData(session, timeout: photoTimeoutSeconds)
-        return try writePhotoToTempFile(photoData)
-      } catch {
-        // Capture failed (e.g. timeout); invalidate session so next capture uses fresh one
-        await session.stop()
-        streamSession = nil
-        throw error
-      }
-    }
+    isCapturing = true
+    defer { isCapturing = false }
 
-    // Fallback: create new session. Clear any stale cached session first to avoid device conflict.
-    if let session = streamSession {
-      print("[ExpoWearablesCamera] Cached session not ready, stopping before new capture")
-      await session.stop()
+    if let old = streamSession {
+      print("[ExpoWearablesCamera] Stopping leftover session before new capture")
+      await old.stop()
       streamSession = nil
     }
 
-    let wearables = Wearables.shared
-    let selector = deviceSelector ?? MWDATCore.AutoDeviceSelector(wearables: wearables)
+    guard let selector = deviceSelector else {
+      throw NSError(domain: "ExpoWearablesCamera", code: 0, userInfo: [
+        NSLocalizedDescriptionKey: "Monitoring not started. Call startMonitoring first.",
+      ])
+    }
+
     _ = try await waitForActiveDevice(selector: selector, timeout: deviceWaitTimeoutSeconds)
 
     let config = MWDATCamera.StreamSessionConfig(videoCodec: .raw, resolution: .low, frameRate: 24)
     let session = MWDATCamera.StreamSession(streamSessionConfig: config, deviceSelector: selector)
+    streamSession = session
 
+    print("[ExpoWearablesCamera] Starting fresh stream session for capture")
     await session.start()
 
     do {
       try await waitForStreamState(session, state: .streaming, timeout: streamTimeoutSeconds)
+      print("[ExpoWearablesCamera] Stream is live, setting up capture")
 
-      guard session.capturePhoto(format: .jpeg) else {
-        await session.stop()
-        throw NSError(domain: "ExpoWearablesCamera", code: 2, userInfo: [
-          NSLocalizedDescriptionKey: "Photo capture request failed",
-        ])
-      }
+      let photoData = try await captureAndWaitForPhoto(session, timeout: photoTimeoutSeconds)
+      let result = try writePhotoToTempFile(photoData)
 
-      let photoData = try await waitForPhotoData(session, timeout: photoTimeoutSeconds)
-      // Keep session alive for subsequent captures (matches Meta SDK sample - session stays until disconnect)
-      streamSession = session
-      return try writePhotoToTempFile(photoData)
-    } catch {
+      print("[ExpoWearablesCamera] Capture complete, stopping session")
       await session.stop()
+      streamSession = nil
+
+      return result
+    } catch {
+      print("[ExpoWearablesCamera] Capture failed, cleaning up session: \(error)")
+      await session.stop()
+      streamSession = nil
       throw error
     }
   }
@@ -453,6 +429,8 @@ public class ExpoWearablesCameraModule: Module {
       let token = session.statePublisher.listen { state in
         continuation.yield(state)
       }
+      // Yield the current state immediately so we don't miss a fast transition
+      continuation.yield(session.state)
       continuation.onTermination = { _ in
         Task { await token.cancel() }
       }
@@ -466,22 +444,49 @@ public class ExpoWearablesCameraModule: Module {
     }
   }
 
+  /// Sets up photo/error/state listeners BEFORE firing capturePhoto to guarantee
+  /// we never miss the photo data event. Also listens for errors and unexpected
+  /// session stops so we fail immediately instead of hanging until timeout.
   @MainActor
-  private func waitForPhotoData(
+  private func captureAndWaitForPhoto(
     _ session: MWDATCamera.StreamSession,
     timeout: TimeInterval
   ) async throws -> MWDATCamera.PhotoData {
-    let stream = AsyncStream<MWDATCamera.PhotoData> { continuation in
-      let token = session.photoDataPublisher.listen { photo in
+    let stream = AsyncThrowingStream<MWDATCamera.PhotoData, Error> { continuation in
+      let photoToken = session.photoDataPublisher.listen { photo in
         continuation.yield(photo)
+        continuation.finish()
+      }
+      let errorToken = session.errorPublisher.listen { error in
+        continuation.finish(throwing: error)
+      }
+      let stateToken = session.statePublisher.listen { state in
+        if state == .stopped || state == .stopping {
+          continuation.finish(throwing: NSError(
+            domain: "ExpoWearablesCamera",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Stream session stopped unexpectedly during capture"]
+          ))
+        }
       }
       continuation.onTermination = { _ in
-        Task { await token.cancel() }
+        Task {
+          await photoToken.cancel()
+          await errorToken.cancel()
+          await stateToken.cancel()
+        }
       }
     }
 
+    print("[ExpoWearablesCamera] Capturing photo, waiting for data...")
+    guard session.capturePhoto(format: .jpeg) else {
+      throw NSError(domain: "ExpoWearablesCamera", code: 2, userInfo: [
+        NSLocalizedDescriptionKey: "Photo capture request failed",
+      ])
+    }
+
     return try await withTimeout(timeout) {
-      for await photo in stream {
+      for try await photo in stream {
         return photo
       }
       throw TimeoutError.timedOut

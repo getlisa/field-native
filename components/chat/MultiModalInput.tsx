@@ -110,7 +110,9 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const isTranscribing = isTranscribingProp || isTranscribingLocal;
   const [wearablesStatus, setWearablesStatus] = useState<WearablesStatusEvent | null>(null);
   const [isConnectingMeta, setIsConnectingMeta] = useState(false);
+  const [isCapturingGlasses, setIsCapturingGlasses] = useState(false);
   const [shouldMonitorWearables, setShouldMonitorWearables] = useState(false);
+  const onImageSelectedRef = useRef(onImageSelected);
   const wearablesInitAttemptedRef = useRef(false);
   const wearablesInitializedRef = useRef(false);
   const legacyRecorderRef = useRef<AudioRecorder | null>(null);
@@ -123,6 +125,12 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const pulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const pulseAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
+
+  // Keep ref in sync so the long-running capture async chain always calls
+  // the latest callback, even after background→foreground transitions.
+  useEffect(() => {
+    onImageSelectedRef.current = onImageSelected;
+  }, [onImageSelected]);
 
   const ensureWearablesPermissions = useCallback(async () => {
     if (Platform.OS !== 'android') return true;
@@ -1011,6 +1019,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
         return;
       }
 
+      setIsCapturingGlasses(true);
       const result = await wearablesModule.capturePhotoToTempFile();
       if (result?.localPath) {
         const fileName = result.localPath.split('/').pop() || `glasses-${Date.now()}.jpg`;
@@ -1029,28 +1038,32 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           });
         }
 
-        onImageSelected?.({
+        // Use ref to always call the latest callback — the long-running capture
+        // spans a background→foreground transition (Meta AI permission flow),
+        // so the closure-captured callback may be stale after re-render.
+        onImageSelectedRef.current?.({
           uri,
           type: mimeType,
           name: fileName,
         });
-        return;
+      } else {
+        Alert.alert('Capture Error', 'No photo was returned from glasses camera.');
       }
-
-      Alert.alert('Capture Error', 'No photo was returned from glasses camera.');
     } catch (error: any) {
       console.error('[MultiModalInput] Glasses camera error:', error);
       const alert = getWearablesErrorAlert(error);
       if (alert) {
         Alert.alert(alert.title, alert.message, [{ text: 'OK' }]);
-        return;
+      } else {
+        Alert.alert(
+          'Glasses Camera Error',
+          'Failed to connect to Meta AI or capture from glasses. Please try again.'
+        );
       }
-      Alert.alert(
-        'Glasses Camera Error',
-        'Failed to connect to Meta AI or capture from glasses. Please try again.'
-      );
+    } finally {
+      setIsCapturingGlasses(false);
     }
-  }, [ensureWearablesPermissions, getWearablesErrorAlert, onImageSelected, pendingImages]);
+  }, [ensureWearablesPermissions, getWearablesErrorAlert, pendingImages]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Gallery Pick
@@ -1235,10 +1248,18 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           </Pressable>
 
           <Pressable
-            style={[styles.iconButton, { backgroundColor: colors.backgroundSecondary }]}
+            style={[
+              styles.iconButton,
+              { backgroundColor: colors.backgroundSecondary },
+              isCapturingGlasses && { backgroundColor: colors.primary },
+            ]}
             onPress={handleGlassesCameraPress}
-            disabled={isLoading || isRecording || isTranscribing || disabled}>
-            <Ionicons name="glasses-outline" size={18} color={colors.textSecondary} />
+            disabled={isLoading || isRecording || isTranscribing || disabled || isCapturingGlasses}>
+            {isCapturingGlasses ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Ionicons name="glasses-outline" size={18} color={colors.textSecondary} />
+            )}
           </Pressable>
         </View>
 

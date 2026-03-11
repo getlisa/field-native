@@ -33,22 +33,32 @@ public class AppDelegate: ExpoAppDelegate {
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  // Linking API
+  // Linking API — routes incoming URLs to Meta Wearables SDK or React Native.
+  // Meta AI callback URLs contain a "metaWearablesAction" query parameter; these
+  // must be consumed by the SDK only. Passing them to RCTLinkingManager would
+  // cause Expo Router to interpret the bare scheme (field://) as the root route,
+  // navigating the user away from the current screen.
   public override func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
-    Task { @MainActor in
-      print("[AppDelegate] Received URL: \(url)")
-      do {
-        let handled = try await Wearables.shared.handleUrl(url)
-        print("[AppDelegate] handleUrl result: \(handled)")
-      } catch {
-        print("[AppDelegate] handleUrl error: \(error)")
+    if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+       components.queryItems?.contains(where: { $0.name == "metaWearablesAction" }) == true {
+      Task { @MainActor in
+        print("[AppDelegate] Meta wearables callback URL: \(url)")
+        do {
+          let handled = try await Wearables.shared.handleUrl(url)
+          print("[AppDelegate] handleUrl result: \(handled)")
+        } catch {
+          print("[AppDelegate] handleUrl error: \(error)")
+        }
       }
+      return true
     }
-    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
+
+    return super.application(app, open: url, options: options)
+      || RCTLinkingManager.application(app, open: url, options: options)
   }
 
   // Universal Links

@@ -28,7 +28,7 @@
         <key>CFBundleURLSchemes</key>
         <array>
           <string>field</string>
-          <string>com.justclara.field</string>
+          <string>com.claraglasses.field</string>
         </array>
       </dict>
       <dict>
