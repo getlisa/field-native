@@ -50,6 +50,15 @@ interface ConversationResponse {
 
 type HeadersShape = Record<string, string>;
 
+const getDeviceTimezone = (): string | undefined => {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof timezone === 'string' && timezone.trim() ? timezone : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const headers: HeadersShape = {};
   if (asJson) headers['Content-Type'] = 'application/json';
@@ -57,6 +66,11 @@ const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const { access_token } = useAuthStore.getState();
   if (access_token) {
     headers['Authorization'] = `Bearer ${access_token}`;
+  }
+
+  const timezone = getDeviceTimezone();
+  if (timezone) {
+    headers['X-Device-Timezone'] = timezone;
   }
 
   return headers;
@@ -68,6 +82,11 @@ const buildMultipartHeaders = (): HeadersShape => {
   const { access_token } = useAuthStore.getState();
   if (access_token) {
     headers['Authorization'] = `Bearer ${access_token}`;
+  }
+
+  const timezone = getDeviceTimezone();
+  if (timezone) {
+    headers['X-Device-Timezone'] = timezone;
   }
 
   return headers;
