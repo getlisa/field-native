@@ -22,7 +22,7 @@ import { InsightsTab } from '@/components/jobs/tabs/InsightsTab';
 import { TranscriptionTab } from '@/components/jobs/tabs/TranscriptionTab';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Button } from '@/components/ui';
+import { Button, Badge } from '@/components/ui';
 import { useTheme } from '@/contexts/ThemeContext';
 import { JobDetailProvider } from '@/contexts/JobDetailContext';
 import { useJobDetails } from '@/hooks/useJobDetails';
@@ -41,7 +41,7 @@ import {
   formatProactiveSuggestionsForNotification,
 } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
-import { jobService } from '@/services/jobService';
+import { jobService, formatCrmDisplayText } from '@/services/jobService';
 import authService from '@/services/authService';
 import type { ProactiveSuggestionsMessage } from '@/lib/RealtimeChat';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
@@ -52,6 +52,15 @@ interface Tab {
   key: TabKey;
   icon: keyof typeof Ionicons.glyphMap;
 }
+
+const STATUS_CONFIG: Record<
+  'scheduled' | 'ongoing' | 'completed',
+  { icon: keyof typeof Ionicons.glyphMap; variant: 'default' | 'success' | 'warning'; label: string }
+> = {
+  scheduled: { icon: 'calendar-outline', variant: 'default', label: 'Scheduled' },
+  ongoing: { icon: 'radio-button-on', variant: 'warning', label: 'In Progress' },
+  completed: { icon: 'checkmark-circle', variant: 'success', label: 'Completed' },
+};
 
 const TABS: Tab[] = [
   { key: 'transcription', icon: 'document-text-outline' },
@@ -1286,6 +1295,7 @@ export default function JobDetailPage() {
   // Render header with job info and action buttons
   const renderHeader = () => {
     const isAskAITabActive = activeTab === 'askAI' || !salesCoachingEnabled;
+    const crmDisplayText = formatCrmDisplayText(job.meta_data);
     
     return (
       <View
@@ -1303,9 +1313,16 @@ export default function JobDetailPage() {
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </Pressable>
           <View style={styles.jobInfo}>
-            <ThemedText style={styles.jobName} numberOfLines={1}>
-              {job.job_target_name || 'Untitled Job'}
-            </ThemedText>
+            <View style={styles.jobNameContainer}>
+              <ThemedText style={styles.jobName} numberOfLines={1}>
+                {job.job_target_name || 'Untitled Job'}
+              </ThemedText>
+              {crmDisplayText && (
+                <ThemedText style={[styles.crmDisplayText, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {crmDisplayText}
+                </ThemedText>
+              )}
+            </View>
             <View style={styles.jobMetaRow}>
               <Ionicons name="location-outline" size={14} color={colors.iconSecondary} />
               <ThemedText style={[styles.jobMeta, { color: colors.textSecondary }]} numberOfLines={1}>
@@ -1342,8 +1359,8 @@ export default function JobDetailPage() {
             </Pressable>
           )}
 
-          {/* Action Button or Status Badge - Only show if sales_coaching_enabled */}
-          {salesCoachingEnabled && (
+          {/* Action Button or Status Badge */}
+          {salesCoachingEnabled ? (
             <>
               {isAssignedToJob ? (
                 <>
@@ -1452,6 +1469,13 @@ export default function JobDetailPage() {
                 </>
               )}
             </>
+          ) : (
+            // When sales_coaching_enabled is false, only show status badge for scheduled or completed
+            (job.status === 'scheduled' || job.status === 'completed') && (
+              <Badge variant={STATUS_CONFIG[job.status].variant} icon={STATUS_CONFIG[job.status].icon} size="sm">
+                {STATUS_CONFIG[job.status].label}
+              </Badge>
+            )
           )}
         </View>
       </View>
@@ -1571,9 +1595,16 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.xs,
   },
+  jobNameContainer: {
+    gap: Spacing.xs,
+  },
   jobName: {
     fontSize: FontSizes.lg,
     fontWeight: '600',
+  },
+  crmDisplayText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '400',
   },
   jobMetaRow: {
     flexDirection: 'row',

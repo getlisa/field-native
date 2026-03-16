@@ -21,6 +21,13 @@ export interface Job {
   status: JobStatus;
   created_at: string;
   updated_at: string;
+  meta_data?: {
+    crm_type?: 'SERVICETITAN' | 'BUILDOPS';
+    jobNumber?: string;
+    appointmentNumber?: string;
+    visitNumber?: number;
+    [key: string]: any;
+  };
   visit_sessions?: VisitSession;
   visit_session_metrics?: VisitSessionMetrics | null;
 }
@@ -201,6 +208,27 @@ export interface TranscriptionTurn {
   provider_result_id: string;
   transcription_session_id: string | number; // bigint serialized as string or number
 }
+
+/**
+ * Helper function to format CRM display text for job
+ * @param metaData - Job meta_data object
+ * @returns Formatted CRM display text or null
+ */
+export const formatCrmDisplayText = (metaData?: Job['meta_data']): string | null => {
+  if (!metaData?.crm_type) {
+    return null;
+  }
+
+  if (metaData.crm_type === 'SERVICETITAN' && metaData.appointmentNumber) {
+    return metaData.appointmentNumber;
+  }
+
+  if (metaData.crm_type === 'BUILDOPS' && metaData.jobNumber && metaData.visitNumber !== undefined) {
+    return `${metaData.jobNumber}-${metaData.visitNumber}`;
+  }
+
+  return null;
+};
 
 /**
  * Job Service

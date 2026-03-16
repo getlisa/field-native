@@ -13,6 +13,8 @@ import {
   Platform,
   KeyboardAvoidingView,
   Dimensions,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -23,8 +25,9 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { Spacing, FontSizes, BorderRadius } from '@/constants/theme';
 import type { Job, JobStatus, JobFilterOptions } from '@/services/jobService';
 import type { User } from '@/store/useAuthStore';
-import { jobService, type CreateJobRequest } from '@/services/jobService';
+import { jobService, type CreateJobRequest, formatCrmDisplayText } from '@/services/jobService';
 import { usersService } from '@/services/usersService';
+import { crmService, type CrmConnection } from '@/services/crmService';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 import { useCompanyConfigsStore } from '@/store/useCompanyConfigsStore';
 
@@ -57,18 +60,24 @@ const JobCard: React.FC<JobCardProps> = ({ job, onPress }) => {
   const { colors } = useTheme();
   const statusConfig = STATUS_CONFIG[job.status];
   const salesCoachingEnabled = useCompanyConfigsStore((state: { configs: { sales_coaching_enabled?: boolean } | null }) => state.configs?.sales_coaching_enabled ?? false);
+  const crmDisplayText = formatCrmDisplayText(job.meta_data);
 
   return (
     <Card pressable onPress={onPress} style={styles.jobCard}>
       <CardHeader style={styles.jobCardHeader}>
-        <ThemedText style={styles.jobTitle} numberOfLines={1}>
-          {job.job_target_name || 'Untitled job'}
-        </ThemedText>
-        {salesCoachingEnabled && (
-          <Badge variant={statusConfig.variant} icon={statusConfig.icon} size="sm">
-            {statusConfig.label}
-          </Badge>
-        )}
+        <View style={styles.jobTitleContainer}>
+          <ThemedText style={styles.jobTitle} numberOfLines={1}>
+            {job.job_target_name || 'Untitled job'}
+          </ThemedText>
+          {crmDisplayText && (
+            <ThemedText style={[styles.crmDisplayText, { color: colors.textSecondary }]} numberOfLines={1}>
+              {crmDisplayText}
+            </ThemedText>
+          )}
+        </View>
+        <Badge variant={statusConfig.variant} icon={statusConfig.icon} size="sm">
+          {statusConfig.label}
+        </Badge>
       </CardHeader>
 
       <CardBody>
@@ -125,6 +134,8 @@ export const JobsList: React.FC<Props> = ({
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isTechSelectOpen, setIsTechSelectOpen] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [crmConnection, setCrmConnection] = useState<CrmConnection | null>(null);
   
   // Date picker states
   const [showFromPicker, setShowFromPicker] = useState(false);
@@ -134,6 +145,21 @@ export const JobsList: React.FC<Props> = ({
   
   // Debounce timer ref
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // Fetch CRM connection on mount
+  useEffect(() => {
+    const fetchConnection = async () => {
+      try {
+        const connection = await crmService.getConnection();
+        setCrmConnection(connection);
+      } catch (error) {
+        console.error('Error fetching CRM connection:', error);
+        setCrmConnection(null);
+      }
+    };
+    
+    fetchConnection();
+  }, []);
   
   // Initialize filter state from currentFilters prop
   useEffect(() => {
@@ -295,14 +321,17 @@ export const JobsList: React.FC<Props> = ({
   }, []);
 
   const groupedJobs = useMemo(() => {
-    // If sales_coaching_enabled is false, don't group by status - just return all jobs in a single array
+    // If sales_coaching_enabled is false, only show scheduled or completed jobs
     if (!salesCoachingEnabled) {
       const sortByDate = (arr: Job[]) =>
         [...arr].sort((a, b) => new Date(b.start_timestamp).getTime() - new Date(a.start_timestamp).getTime());
+      // Filter and separate scheduled and completed jobs
+      const scheduled = filteredJobs.filter((j) => j.status === 'scheduled');
+      const completed = filteredJobs.filter((j) => j.status === 'completed');
       return {
-        scheduled: [],
+        scheduled: sortByDate(scheduled),
         ongoing: [],
-        completed: sortByDate(filteredJobs), // Put all jobs in completed section (but we won't show section title)
+        completed: sortByDate(completed),
       };
     }
     
@@ -318,6 +347,59 @@ export const JobsList: React.FC<Props> = ({
       completed: sortByDate(completed),
     };
   }, [filteredJobs, salesCoachingEnabled]);
+
+  const handleSync = useCallback(async () => {
+    if (!currentUser) {
+      Alert.alert('Error', 'User information not available');
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      let response;
+      const userRole = currentUser.role as string | undefined;
+
+      // For technicians, use technician sync endpoint
+      if (userRole === 'technician' && currentUser.id) {
+        response = await crmService.syncTechnicianJobs(currentUser.id);
+      } 
+      // For admin or service_manager, use company sync endpoint
+      else if ((userRole === 'admin' || userRole === 'service_manager') && currentUser.company_id) {
+        response = await crmService.syncJobs(currentUser.company_id);
+      } 
+      else {
+        Alert.alert('Error', 'Unable to sync: Invalid user role or missing information');
+        return;
+      }
+
+      // Handle response structure - may be wrapped in 'result' property
+      const syncData = (response as any).result || response;
+      const syncedCount = syncData.synced ?? 0;
+
+      // Show success message
+      Alert.alert(
+        'Sync Complete',
+        `Successfully synced ${syncedCount} job${syncedCount !== 1 ? 's' : ''} from CRM.`,
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              // Refresh jobs list after sync
+              onRefresh();
+            },
+          },
+        ]
+      );
+    } catch (err: any) {
+      console.error('Error syncing jobs:', err);
+      Alert.alert(
+        'Sync Failed',
+        err?.message || 'Failed to sync jobs from CRM. Please try again.'
+      );
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [currentUser, onRefresh]);
 
   const handleSubmit = useCallback(async () => {
     if (!validateForm()) return;
@@ -399,23 +481,49 @@ export const JobsList: React.FC<Props> = ({
             Manage your service jobs
           </ThemedText>
         </View>
-        <Button 
-          size="sm" 
-          variant="primary" 
-          onPress={() => {
-            setIsCreateModalOpen(true);
-            // Track job creation started
-            if (posthog) {
-              const companyId = getCompanyIdForTracking();
-              posthog.capture(PostHogEvents.JOB_CREATION_STARTED, {
-                ...(companyId !== undefined && { company_id: companyId }),
-              });
-            }
-          }} 
-          icon="add"
-        >
-          New Job
-        </Button>
+        <View style={styles.headerButtons}>
+          {crmConnection?.provider === 'SERVICETITAN' && (
+            <Pressable
+              onPress={handleSync}
+              disabled={isSyncing}
+              style={({ pressed }) => [
+                styles.syncIconButton,
+                {
+                  backgroundColor: isSyncing 
+                    ? colors.buttonDisabled 
+                    : pressed 
+                      ? colors.buttonSecondaryPressed 
+                      : colors.buttonSecondary,
+                  borderColor: colors.border,
+                  opacity: isSyncing ? 0.6 : pressed ? 0.8 : 1,
+                },
+              ]}
+            >
+              {isSyncing ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons name="refresh" size={18} color={colors.text} />
+              )}
+            </Pressable>
+          )}
+          <Button 
+            size="sm" 
+            variant="primary" 
+            onPress={() => {
+              setIsCreateModalOpen(true);
+              // Track job creation started
+              if (posthog) {
+                const companyId = getCompanyIdForTracking();
+                posthog.capture(PostHogEvents.JOB_CREATION_STARTED, {
+                  ...(companyId !== undefined && { company_id: companyId }),
+                });
+              }
+            }} 
+            icon="add"
+          >
+            New Job
+          </Button>
+        </View>
       </View>
 
       {error && (
@@ -465,10 +573,11 @@ export const JobsList: React.FC<Props> = ({
             {renderSection('Completed', groupedJobs.completed)}
           </>
         ) : (
-          // If sales_coaching_enabled is false, show all jobs without section headers
-          groupedJobs.completed.map((job) => (
-            <JobCard key={job.id} job={job} onPress={onJobPress ? () => onJobPress(job) : undefined} />
-          ))
+          // If sales_coaching_enabled is false, show sections but skip Ongoing
+          <>
+            {renderSection('Upcoming', groupedJobs.scheduled)}
+            {renderSection('Completed', groupedJobs.completed)}
+          </>
         )}
         {!loading && filteredJobs.length === 0 && (
           <View style={styles.emptyContainer}>
@@ -999,6 +1108,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.md,
   },
+  headerButtons: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    alignItems: 'center',
+  },
+  syncIconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
   title: {
     marginBottom: Spacing.xs,
   },
@@ -1043,10 +1165,17 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
-  jobTitle: {
+  jobTitleContainer: {
     flex: 1,
+    gap: Spacing.xs,
+  },
+  jobTitle: {
     fontSize: FontSizes.lg,
     fontWeight: '600',
+  },
+  crmDisplayText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '400',
   },
   jobInfoRow: {
     flexDirection: 'row',

@@ -93,9 +93,6 @@ function CompanyConfigsLoader() {
     // Sync configs data
     if (configs) {
       setConfigs(configs);
-      if (__DEV__) {
-        console.log('[CompanyConfigsLoader] Company configs loaded:', configs);
-      }
     } else if (error) {
       // Sync error state
       const errorMessage = error instanceof Error ? error.message : 'Failed to load company configs';
