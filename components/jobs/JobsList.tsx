@@ -39,7 +39,6 @@ type Props = {
   error?: string | null;
   currentUser?: User | null;
   currentFilters?: JobFilterOptions;
-  onFiltersChange?: (filters: JobFilterOptions | undefined) => void;
 };
 
 const STATUS_CONFIG: Record<
@@ -121,7 +120,6 @@ export const JobsList: React.FC<Props> = ({
   error, 
   currentUser,
   currentFilters,
-  onFiltersChange 
 }) => {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -277,37 +275,37 @@ export const JobsList: React.FC<Props> = ({
   // Track previous debouncedSearch to avoid unnecessary API calls
   const prevDebouncedSearchRef = useRef<string>('');
   const isInitialMountRef = useRef(true);
-  
-  // Trigger server-side search when debouncedSearch changes
+
+  const currentFiltersRef = useRef(currentFilters);
+  currentFiltersRef.current = currentFilters;
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
+
+  // Trigger server-side search when debouncedSearch changes (deps intentionally only debouncedSearch)
   useEffect(() => {
-    // Skip on initial mount (filters are already applied from props)
     if (isInitialMountRef.current) {
       isInitialMountRef.current = false;
       prevDebouncedSearchRef.current = debouncedSearch;
       return;
     }
-    
-    // Skip if debouncedSearch hasn't actually changed
+
     if (prevDebouncedSearchRef.current === debouncedSearch) {
       return;
     }
-    
+
     prevDebouncedSearchRef.current = debouncedSearch;
-    
-    // Build filter options with current filters + search
-    const filterOptions: JobFilterOptions = { ...currentFilters };
-    
+
+    const filterOptions: JobFilterOptions = { ...currentFiltersRef.current };
+
     if (debouncedSearch.trim()) {
       filterOptions.job_target_name = debouncedSearch.trim();
     } else {
-      // Remove job_target_name if search is cleared
       delete filterOptions.job_target_name;
     }
-    
-    // Update parent's filter state and trigger refresh
-    onFiltersChange?.(Object.keys(filterOptions).length > 0 ? filterOptions : undefined);
-    onRefresh(filterOptions);
-  }, [debouncedSearch, onRefresh, onFiltersChange, currentFilters]); // Only trigger on debouncedSearch change
+
+    // handleRefresh in parent updates filter state and fetches — do not also call setCurrentFilters here
+    onRefreshRef.current(filterOptions);
+  }, [debouncedSearch]);
   
   // No client-side filtering - all filtering is server-side
   const filteredJobs = jobs;
@@ -769,10 +767,6 @@ export const JobsList: React.FC<Props> = ({
                     });
                   }
                   
-                  // Update parent's filter state
-                  onFiltersChange?.(Object.keys(filterOptions).length > 0 ? filterOptions : undefined);
-                  
-                  // Apply server-side filters
                   onRefresh(filterOptions);
                 }}
               >
