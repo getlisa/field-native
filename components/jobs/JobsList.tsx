@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import {
   RefreshControl,
   StyleSheet,
@@ -122,6 +123,7 @@ export const JobsList: React.FC<Props> = ({
   currentFilters,
 }) => {
   const { colors } = useTheme();
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const salesCoachingEnabled = useCompanyConfigsStore((state: { configs: { sales_coaching_enabled?: boolean } | null }) => state.configs?.sales_coaching_enabled ?? false);
   const [search, setSearch] = useState('');
@@ -552,16 +554,21 @@ export const JobsList: React.FC<Props> = ({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.jobsList}
         refreshControl={
-          <RefreshControl
-            refreshing={loading}
-            onRefresh={() => {
-              // Use current filters when refreshing
-              onRefresh(currentFilters);
-            }}
-            tintColor={colors.primary}
-            colors={[colors.primary]}
-            progressViewOffset={Spacing.lg}
-          />
+          isFocused ? (
+            <RefreshControl
+              // Force a native remount when focus/loading changes.
+              // This avoids an iOS-native stuck spinner after "offscreen beginRefreshing".
+              key={`jobs-refresh-${loading ? 'loading' : 'idle'}`}
+              refreshing={loading}
+              onRefresh={() => {
+                // Use current filters when refreshing
+                onRefresh(currentFilters);
+              }}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+              progressViewOffset={Spacing.lg}
+            />
+          ) : undefined
         }
       >
         {salesCoachingEnabled ? (

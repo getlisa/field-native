@@ -44,9 +44,9 @@ export default function JobsTab() {
 
   // Jobs fetch only — do not refetch company configs on every search/pull (avoids spam + extra work)
   const refreshJobsOnly = useCallback(
-    (filters?: JobFilterOptions) => {
+    (filters?: JobFilterOptions, opts?: { force?: boolean }) => {
       if (authedCompanyId) {
-        fetchJobs(authedCompanyId, filters);
+        fetchJobs(authedCompanyId, filters, { force: opts?.force });
       }
     },
     [authedCompanyId, fetchJobs]
@@ -85,7 +85,8 @@ export default function JobsTab() {
         setCurrentFilters(filters);
       }
       const filtersToUse = filters !== undefined ? filters : currentFilters;
-      refreshJobsOnly(filtersToUse);
+      // Force a new fetch when user explicitly refreshes/searches/applies filters.
+      refreshJobsOnly(filtersToUse, { force: true });
     },
     [refreshJobsOnly, currentFilters]
   );

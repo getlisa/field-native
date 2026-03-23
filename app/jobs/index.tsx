@@ -43,7 +43,7 @@ export default function JobsPage() {
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <JobsList
-          onRefresh={() => authedCompanyId && fetchJobs(authedCompanyId)}
+          onRefresh={() => authedCompanyId && fetchJobs(authedCompanyId, undefined, { force: true })}
           onJobPress={handleJobPress}
           jobs={jobs}
           loading={loading}
