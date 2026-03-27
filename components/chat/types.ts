@@ -11,6 +11,8 @@ export interface Message {
     itemIds?: string[];
     itemId?: string;
   };
+  /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
+  thoughtDurationSeconds?: number;
 }
 
 export interface MessageAttachment {

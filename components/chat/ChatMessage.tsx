@@ -7,6 +7,8 @@ import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
+import type { Message } from '@/components/chat/types';
+
 interface MessageAttachment {
   id: string;
   fileName: string;
@@ -16,26 +18,13 @@ interface MessageAttachment {
   presignedUrl?: string;
 }
 
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-  contentType?: 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO' | 'FILE';
-  imageUrl?: string;
-  attachments?: MessageAttachment[];
-  metadata?: {
-    type?: 'checklist_update' | 'proactive_suggestion';
-    itemIds?: string[];
-    itemId?: string;
-  };
-}
-
 interface ChatMessageProps {
   message: Message;
+  /** True while tokens are still streaming for this message */
+  isStreaming?: boolean;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false }) => {
   const { colors } = useTheme();
   const isAssistant = message.role === 'assistant';
   const isProactive = message.content.startsWith('💡');
@@ -180,7 +169,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
     return (
       <View style={styles.messageRow}>
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-          <Ionicons name="chatbubble-ellipses" size={16} color="#ffffff" />
+          <Ionicons name="sparkles" size={16} color="#ffffff" />
         </View>
         <View style={styles.messageContent}>
           <View
@@ -212,7 +201,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
     return (
       <View style={styles.messageRow}>
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-          <Ionicons name="chatbubble-ellipses" size={16} color="#ffffff" />
+          <Ionicons name="sparkles" size={16} color="#ffffff" />
         </View>
         <View style={styles.messageContent}>
           <View
@@ -248,7 +237,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
         styles.proactiveBubble,
         { backgroundColor: colors.backgroundSecondary, borderColor: colors.border },
       ]
-    : [styles.assistantBubble, { backgroundColor: colors.backgroundSecondary }];
+    : [
+        styles.assistantBubble,
+        {
+          backgroundColor: colors.backgroundSecondary,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+      ];
 
   const userBubbleStyle = [styles.userBubble, { backgroundColor: colors.primary }];
 
@@ -261,16 +257,28 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message }) 
         ]}
       >
         <Ionicons
-          name={isAssistant ? 'chatbubble-ellipses' : 'person'}
+          name={isAssistant ? 'sparkles' : 'person'}
           size={16}
           color={isAssistant ? '#ffffff' : colors.text}
         />
       </View>
       <View style={[styles.messageContent, !isAssistant && styles.userMessageContent]}>
+        {isAssistant &&
+          message.thoughtDurationSeconds != null &&
+          !isChecklistUpdate &&
+          !isProactiveSuggestion && (
+            <View style={styles.thoughtRow}>
+              <Ionicons name="flash-outline" size={14} color={colors.textSecondary} />
+              <ThemedText style={[styles.thoughtLabel, { color: colors.textSecondary }]}>
+                Thought for {message.thoughtDurationSeconds}s
+              </ThemedText>
+            </View>
+          )}
         <View
           style={[
             styles.bubble,
             isAssistant ? assistantBubbleStyle : userBubbleStyle,
+            isStreaming && isAssistant && styles.streamingBubble,
           ]}>
           {isImageMessage && imageAttachments.length > 0 && (
             <View style={styles.attachmentsContainer}>
@@ -368,7 +376,19 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   assistantBubble: {},
+  streamingBubble: {
+    opacity: 0.98,
+  },
   userBubble: {},
+  thoughtRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  thoughtLabel: {
+    fontSize: 12,
+  },
   proactiveBubble: {
     borderWidth: 1,
   },
