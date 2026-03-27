@@ -86,6 +86,16 @@ export default function JobDetailPage() {
     }
     return 'askAI';
   });
+
+  // Lazy-mount + keep-alive: track which tabs have been visited so we can mount
+  // them once and never unmount. Tabs that haven't been visited yet won't render.
+  const [visitedTabs, setVisitedTabs] = useState<Set<TabKey>>(() => new Set([activeTab]));
+  useEffect(() => {
+    setVisitedTabs((prev) => {
+      if (prev.has(activeTab)) return prev;
+      return new Set(prev).add(activeTab);
+    });
+  }, [activeTab]);
   
   // Track if we've already tracked the initial mount to prevent double-tracking with root layout
   const hasTrackedInitialMountRef = useRef<string | null>(null);
@@ -143,7 +153,7 @@ export default function JobDetailPage() {
   const tabOrder: TabKey[] = ['transcription', 'askAI', 'checklist', 'insights'];
 
   // Use reusable swipe navigation hook
-  const { panResponder, panX, slideAnim, fadeAnim } = useSwipeNavigation({
+  const { panResponder, panX, slideAnim, fadeAnim, changeTab } = useSwipeNavigation({
     tabs: tabOrder,
     activeTab,
     onTabChange: setActiveTab,
@@ -1261,24 +1271,22 @@ export default function JobDetailPage() {
     );
   }
 
-  const renderActiveTab = () => {
-    // If sales coaching is disabled, only show AskAITab
-    if (!salesCoachingEnabled) {
-      return <AskAITab />;
-    }
-    
-    switch (activeTab) {
-      case 'transcription':
-        return <TranscriptionTab />;
-      case 'askAI':
-        return <AskAITab />;
-      case 'checklist':
-        return <ConversationChecklistTab />;
-      case 'insights':
-        return <InsightsTab />;
-      default:
-        return <TranscriptionTab />;
-    }
+  // Render a single tab scene — only mounts after first visit, then stays alive.
+  const renderTabScene = (tabKey: TabKey) => {
+    if (!visitedTabs.has(tabKey)) return null;
+    const isActive = activeTab === tabKey;
+    return (
+      <View
+        key={tabKey}
+        style={isActive ? styles.visibleTab : styles.hiddenTab}
+        pointerEvents={isActive ? 'auto' : 'none'}
+      >
+        {tabKey === 'transcription' && <TranscriptionTab />}
+        {tabKey === 'askAI' && <AskAITab />}
+        {tabKey === 'checklist' && <ConversationChecklistTab />}
+        {tabKey === 'insights' && <InsightsTab />}
+      </View>
+    );
   };
 
   const formatDateTime = (dateString: string) => {
@@ -1486,8 +1494,6 @@ export default function JobDetailPage() {
   const isAskAITab = activeTab === 'askAI';
   const useKeyboardAvoidingView = isAskAITab && Platform.OS === 'ios';
 
-  console.log(isAssignedToJob, isConnected, isRecording, isConnecting, visitSession?.id, job?.visit_sessions?.id, "Debugging Job Detail Page");
-
   const content = (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -1518,7 +1524,7 @@ export default function JobDetailPage() {
                       borderBottomWidth: 3,
                     },
                   ]}
-                  onPress={() => setActiveTab(tab.key)}
+                  onPress={() => changeTab(tab.key)}
                 >
                   <Ionicons
                     name={tab.icon}
@@ -1531,7 +1537,7 @@ export default function JobDetailPage() {
           </View>
         )}
 
-        {/* Tab Content */}
+        {/* Tab Content — all visited tabs stay mounted; inactive ones are invisible */}
         <Animated.View 
           style={[
             styles.tabContent,
@@ -1546,7 +1552,16 @@ export default function JobDetailPage() {
           ]} 
           {...panResponder.panHandlers}
         >
-          {renderActiveTab()}
+          {salesCoachingEnabled ? (
+            <>
+              {renderTabScene('transcription')}
+              {renderTabScene('askAI')}
+              {renderTabScene('checklist')}
+              {renderTabScene('insights')}
+            </>
+          ) : (
+            <AskAITab />
+          )}
         </Animated.View>
       </SafeAreaView>
     </ThemedView>
@@ -1699,6 +1714,13 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
+  },
+  visibleTab: {
+    flex: 1,
+  },
+  hiddenTab: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0,
   },
   loadingContainer: {
     flex: 1,
