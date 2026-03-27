@@ -784,14 +784,14 @@ export const AskAITab: React.FC = () => {
         // (before calling handleSendMessage which might take a while with image uploads)
         setIsTranscribing(false);
 
-        if (resp?.text) {
-          // If there are pending images, send them with the transcribed text
-          // Otherwise, send as regular voice message
-          await handleSendMessage(resp.text, pendingImages.length > 0 ? 'image' : 'voice');
+        if (resp?.text?.trim()) {
+          await handleSendMessage(resp.text.trim(), pendingImages.length > 0 ? 'image' : 'voice');
           return;
         }
 
-        throw new Error('No transcription returned from voice service');
+        if (__DEV__) {
+          console.log('[AskAI] No speech detected in recording, ignoring');
+        }
       } catch (error) {
         console.error('[AskAI] Voice transcription failed:', error);
         setIsTranscribing(false); // Ensure state is cleared on error
