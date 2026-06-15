@@ -2,6 +2,7 @@ import type { WearablesCameraCaptureResult, WearablesCameraPermissionStatus, Wea
 type ExpoWearablesCameraNativeModule = {
     initialize(): Promise<void>;
     startRegistration(): Promise<void>;
+    handleUrl(url: string): Promise<boolean>;
     awaitRegistration(): Promise<void>;
     getRegistrationState(): Promise<string>;
     requestAndroidPermissions(): Promise<boolean>;
