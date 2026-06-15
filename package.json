@@ -14,6 +14,10 @@
     "prebuild:android": "npx expo prebuild --platform android && npm run patch-mwdat",
     "sync-env:preview": "node scripts/sync-env-to-eas.js --profile preview",
     "sync-env:production": "node scripts/sync-env-to-eas.js --profile production",
+    "check-env": "node scripts/check-env.js --profile preview",
+    "check-env:preview": "node scripts/check-env.js --profile preview",
+    "check-env:production": "node scripts/check-env.js --profile production",
+    "check-env:development": "node scripts/check-env.js --profile development",
     "build:preview:android": "eas build --profile preview --platform android",
     "build:preview:ios": "eas build --profile preview --platform ios",
     "build:preview:all": "eas build --profile preview --platform all"

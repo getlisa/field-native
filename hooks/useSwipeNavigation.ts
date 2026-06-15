@@ -9,131 +9,117 @@ export interface SwipeNavigationConfig<T extends string> {
   animationDuration?: number;
 }
 
-export interface SwipeNavigationReturn {
+export interface SwipeNavigationReturn<T extends string = string> {
   panResponder: ReturnType<typeof PanResponder.create>;
   panX: Animated.Value;
   slideAnim: Animated.Value;
   fadeAnim: Animated.Value;
+  /** Programmatic tab change with animation (for tab button presses). */
+  changeTab: (tab: T) => void;
 }
 
-/**
- * Reusable hook for smooth swipe navigation between tabs
- * 
- * Features:
- * - Horizontal swipe gestures
- * - Smooth slide and fade animations
- * - Configurable thresholds and durations
- * 
- * @example
- * ```tsx
- * const { panResponder, slideAnim, fadeAnim } = useSwipeNavigation({
- *   tabs: ['home', 'profile'],
- *   activeTab: currentTab,
- *   onTabChange: setCurrentTab,
- * });
- * ```
- */
 export const useSwipeNavigation = <T extends string>({
   tabs,
   activeTab,
   onTabChange,
   swipeThreshold = 50,
-  animationDuration = 250,
-}: SwipeNavigationConfig<T>): SwipeNavigationReturn => {
+  animationDuration = 150,
+}: SwipeNavigationConfig<T>): SwipeNavigationReturn<T> => {
   const screenWidth = Dimensions.get('window').width;
-  
-  // Animated values
+
   const slideAnim = useRef(new Animated.Value(0)).current;
   const panX = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
-  
-  // Track current tab in ref for panResponder
+
   const activeTabRef = useRef<T>(activeTab);
-  
+
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
-  
-  // Handle tab change with animation
-  const changeTab = useCallback((newTab: T) => {
-    const oldIndex = tabs.indexOf(activeTabRef.current);
-    const newIndex = tabs.indexOf(newTab);
-    const direction = newIndex > oldIndex ? -1 : 1;
-    
-    // Slide and fade out
-    Animated.parallel([
-      Animated.timing(slideAnim, {
-        toValue: direction * screenWidth * 0.2,
-        duration: animationDuration * 0.6,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: animationDuration * 0.5,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      // Change tab while invisible
+
+  // Single-phase tab change: update state immediately, then run a quick
+  // native-driven fade-in. No JS callback between phases — eliminates the
+  // frame-drop that the old two-phase (fade-out → JS → fade-in) caused on iOS.
+  const changeTab = useCallback(
+    (newTab: T) => {
+      if (newTab === activeTabRef.current) return;
+
+      const oldIndex = tabs.indexOf(activeTabRef.current);
+      const newIndex = tabs.indexOf(newTab);
+      const direction = newIndex > oldIndex ? -1 : 1;
+
+      // Switch state immediately (with keep-alive tabs, content is already mounted)
       onTabChange(newTab);
-      slideAnim.setValue(direction * -screenWidth * 0.2);
-      
-      // Slide and fade in
+
+      // Quick single-phase slide-in + fade-in for visual polish
+      slideAnim.setValue(direction * screenWidth * 0.08);
+      fadeAnim.setValue(0.6);
+
       Animated.parallel([
         Animated.timing(slideAnim, {
           toValue: 0,
-          duration: animationDuration * 0.6,
+          duration: animationDuration,
           useNativeDriver: true,
         }),
         Animated.timing(fadeAnim, {
           toValue: 1,
-          duration: animationDuration * 0.5,
+          duration: animationDuration,
           useNativeDriver: true,
         }),
       ]).start();
-    });
-  }, [tabs, slideAnim, fadeAnim, screenWidth, animationDuration, onTabChange]);
-  
-  // Create pan responder for swipe gestures
+    },
+    [tabs, slideAnim, fadeAnim, screenWidth, animationDuration, onTabChange],
+  );
+
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        // Only respond to horizontal swipes
-        return Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+      onMoveShouldSetPanResponder: (
+        _evt: GestureResponderEvent,
+        gestureState: PanResponderGestureState,
+      ) => {
+        return (
+          Math.abs(gestureState.dx) > 10 &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+        );
       },
-      onPanResponderMove: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        // Update pan position for live feedback
+      onPanResponderMove: (
+        _evt: GestureResponderEvent,
+        gestureState: PanResponderGestureState,
+      ) => {
         panX.setValue(gestureState.dx);
       },
-      onPanResponderRelease: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
+      onPanResponderRelease: (
+        _evt: GestureResponderEvent,
+        gestureState: PanResponderGestureState,
+      ) => {
         const currentTab = activeTabRef.current;
         const currentIndex = tabs.indexOf(currentTab);
-        
-        // Reset pan animation
+
         Animated.spring(panX, {
           toValue: 0,
           useNativeDriver: true,
+          tension: 120,
+          friction: 20,
         }).start();
-        
+
         if (gestureState.dx < -swipeThreshold) {
-          // Swipe LEFT → Next tab
           if (currentIndex < tabs.length - 1) {
             changeTab(tabs[currentIndex + 1]);
           }
         } else if (gestureState.dx > swipeThreshold) {
-          // Swipe RIGHT → Previous tab
           if (currentIndex > 0) {
             changeTab(tabs[currentIndex - 1]);
           }
         }
       },
-    })
+    }),
   ).current;
-  
+
   return {
     panResponder,
     panX,
     slideAnim,
     fadeAnim,
+    changeTab,
   };
 };
-

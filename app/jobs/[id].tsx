@@ -22,7 +22,7 @@ import { InsightsTab } from '@/components/jobs/tabs/InsightsTab';
 import { TranscriptionTab } from '@/components/jobs/tabs/TranscriptionTab';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Button } from '@/components/ui';
+import { Button, Badge } from '@/components/ui';
 import { useTheme } from '@/contexts/ThemeContext';
 import { JobDetailProvider } from '@/contexts/JobDetailContext';
 import { useJobDetails } from '@/hooks/useJobDetails';
@@ -41,7 +41,7 @@ import {
   formatProactiveSuggestionsForNotification,
 } from '@/services/notificationService';
 import { getPermissionService } from '@/services/permissionService';
-import { jobService } from '@/services/jobService';
+import { jobService, formatCrmDisplayText } from '@/services/jobService';
 import authService from '@/services/authService';
 import type { ProactiveSuggestionsMessage } from '@/lib/RealtimeChat';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
@@ -52,6 +52,15 @@ interface Tab {
   key: TabKey;
   icon: keyof typeof Ionicons.glyphMap;
 }
+
+const STATUS_CONFIG: Record<
+  'scheduled' | 'ongoing' | 'completed',
+  { icon: keyof typeof Ionicons.glyphMap; variant: 'default' | 'success' | 'warning'; label: string }
+> = {
+  scheduled: { icon: 'calendar-outline', variant: 'default', label: 'Scheduled' },
+  ongoing: { icon: 'radio-button-on', variant: 'warning', label: 'In Progress' },
+  completed: { icon: 'checkmark-circle', variant: 'success', label: 'Completed' },
+};
 
 const TABS: Tab[] = [
   { key: 'transcription', icon: 'document-text-outline' },
@@ -77,6 +86,16 @@ export default function JobDetailPage() {
     }
     return 'askAI';
   });
+
+  // Lazy-mount + keep-alive: track which tabs have been visited so we can mount
+  // them once and never unmount. Tabs that haven't been visited yet won't render.
+  const [visitedTabs, setVisitedTabs] = useState<Set<TabKey>>(() => new Set([activeTab]));
+  useEffect(() => {
+    setVisitedTabs((prev) => {
+      if (prev.has(activeTab)) return prev;
+      return new Set(prev).add(activeTab);
+    });
+  }, [activeTab]);
   
   // Track if we've already tracked the initial mount to prevent double-tracking with root layout
   const hasTrackedInitialMountRef = useRef<string | null>(null);
@@ -134,7 +153,7 @@ export default function JobDetailPage() {
   const tabOrder: TabKey[] = ['transcription', 'askAI', 'checklist', 'insights'];
 
   // Use reusable swipe navigation hook
-  const { panResponder, panX, slideAnim, fadeAnim } = useSwipeNavigation({
+  const { panResponder, panX, slideAnim, fadeAnim, changeTab } = useSwipeNavigation({
     tabs: tabOrder,
     activeTab,
     onTabChange: setActiveTab,
@@ -1252,24 +1271,22 @@ export default function JobDetailPage() {
     );
   }
 
-  const renderActiveTab = () => {
-    // If sales coaching is disabled, only show AskAITab
-    if (!salesCoachingEnabled) {
-      return <AskAITab />;
-    }
-    
-    switch (activeTab) {
-      case 'transcription':
-        return <TranscriptionTab />;
-      case 'askAI':
-        return <AskAITab />;
-      case 'checklist':
-        return <ConversationChecklistTab />;
-      case 'insights':
-        return <InsightsTab />;
-      default:
-        return <TranscriptionTab />;
-    }
+  // Render a single tab scene — only mounts after first visit, then stays alive.
+  const renderTabScene = (tabKey: TabKey) => {
+    if (!visitedTabs.has(tabKey)) return null;
+    const isActive = activeTab === tabKey;
+    return (
+      <View
+        key={tabKey}
+        style={isActive ? styles.visibleTab : styles.hiddenTab}
+        pointerEvents={isActive ? 'auto' : 'none'}
+      >
+        {tabKey === 'transcription' && <TranscriptionTab />}
+        {tabKey === 'askAI' && <AskAITab />}
+        {tabKey === 'checklist' && <ConversationChecklistTab />}
+        {tabKey === 'insights' && <InsightsTab />}
+      </View>
+    );
   };
 
   const formatDateTime = (dateString: string) => {
@@ -1286,6 +1303,7 @@ export default function JobDetailPage() {
   // Render header with job info and action buttons
   const renderHeader = () => {
     const isAskAITabActive = activeTab === 'askAI' || !salesCoachingEnabled;
+    const crmDisplayText = formatCrmDisplayText(job.meta_data);
     
     return (
       <View
@@ -1303,9 +1321,16 @@ export default function JobDetailPage() {
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </Pressable>
           <View style={styles.jobInfo}>
-            <ThemedText style={styles.jobName} numberOfLines={1}>
-              {job.job_target_name || 'Untitled Job'}
-            </ThemedText>
+            <View style={styles.jobNameContainer}>
+              <ThemedText style={styles.jobName} numberOfLines={1}>
+                {job.job_target_name || 'Untitled Job'}
+              </ThemedText>
+              {crmDisplayText && (
+                <ThemedText style={[styles.crmDisplayText, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {crmDisplayText}
+                </ThemedText>
+              )}
+            </View>
             <View style={styles.jobMetaRow}>
               <Ionicons name="location-outline" size={14} color={colors.iconSecondary} />
               <ThemedText style={[styles.jobMeta, { color: colors.textSecondary }]} numberOfLines={1}>
@@ -1342,8 +1367,8 @@ export default function JobDetailPage() {
             </Pressable>
           )}
 
-          {/* Action Button or Status Badge - Only show if sales_coaching_enabled */}
-          {salesCoachingEnabled && (
+          {/* Action Button or Status Badge */}
+          {salesCoachingEnabled ? (
             <>
               {isAssignedToJob ? (
                 <>
@@ -1452,6 +1477,13 @@ export default function JobDetailPage() {
                 </>
               )}
             </>
+          ) : (
+            // When sales_coaching_enabled is false, only show status badge for scheduled or completed
+            (job.status === 'scheduled' || job.status === 'completed') && (
+              <Badge variant={STATUS_CONFIG[job.status].variant} icon={STATUS_CONFIG[job.status].icon} size="sm">
+                {STATUS_CONFIG[job.status].label}
+              </Badge>
+            )
           )}
         </View>
       </View>
@@ -1461,8 +1493,6 @@ export default function JobDetailPage() {
   // Use KeyboardAvoidingView for AskAI tab - iOS only
   const isAskAITab = activeTab === 'askAI';
   const useKeyboardAvoidingView = isAskAITab && Platform.OS === 'ios';
-
-  console.log(isAssignedToJob, isConnected, isRecording, isConnecting, visitSession?.id, job?.visit_sessions?.id, "Debugging Job Detail Page");
 
   const content = (
     <ThemedView style={styles.container}>
@@ -1494,7 +1524,7 @@ export default function JobDetailPage() {
                       borderBottomWidth: 3,
                     },
                   ]}
-                  onPress={() => setActiveTab(tab.key)}
+                  onPress={() => changeTab(tab.key)}
                 >
                   <Ionicons
                     name={tab.icon}
@@ -1507,7 +1537,7 @@ export default function JobDetailPage() {
           </View>
         )}
 
-        {/* Tab Content */}
+        {/* Tab Content — all visited tabs stay mounted; inactive ones are invisible */}
         <Animated.View 
           style={[
             styles.tabContent,
@@ -1522,7 +1552,16 @@ export default function JobDetailPage() {
           ]} 
           {...panResponder.panHandlers}
         >
-          {renderActiveTab()}
+          {salesCoachingEnabled ? (
+            <>
+              {renderTabScene('transcription')}
+              {renderTabScene('askAI')}
+              {renderTabScene('checklist')}
+              {renderTabScene('insights')}
+            </>
+          ) : (
+            <AskAITab />
+          )}
         </Animated.View>
       </SafeAreaView>
     </ThemedView>
@@ -1571,9 +1610,16 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: Spacing.xs,
   },
+  jobNameContainer: {
+    gap: Spacing.xs,
+  },
   jobName: {
     fontSize: FontSizes.lg,
     fontWeight: '600',
+  },
+  crmDisplayText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '400',
   },
   jobMetaRow: {
     flexDirection: 'row',
@@ -1668,6 +1714,13 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
+  },
+  visibleTab: {
+    flex: 1,
+  },
+  hiddenTab: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0,
   },
   loadingContainer: {
     flex: 1,

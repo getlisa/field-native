@@ -25,11 +25,22 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Keyboard, Platform, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Keyboard,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  Platform,
+  Pressable,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
+import { ThinkingIndicator } from '@/components/chat/ThinkingIndicator';
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useJobDetailContext } from '@/contexts/JobDetailContext';
@@ -49,7 +60,6 @@ export const AskAITab: React.FC = () => {
 
   // Refs
   const messagesContainerRef = useRef<FlatList<Message>>(null);
-  const messagesEndRef = useRef<View>(null);
 
   // State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -60,6 +70,13 @@ export const AskAITab: React.FC = () => {
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isThinking, setIsThinking] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+
+  const userScrolledUpRef = useRef(false);
+  const thinkingStartedAtRef = useRef<number | null>(null);
+  const streamingMessageIdRef = useRef<string | null>(null);
 
   // TTS hook for voice agent
   const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
@@ -119,6 +136,12 @@ export const AskAITab: React.FC = () => {
     setConversationId(null);
     setMessages([]);
     setPendingImages([]);
+    setIsThinking(false);
+    setStreamingMessageId(null);
+    streamingMessageIdRef.current = null;
+    thinkingStartedAtRef.current = null;
+    userScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
     if (__DEV__) {
       console.log('[AskAI] Job changed - resetting conversation state for jobId:', jobId);
     }
@@ -144,6 +167,28 @@ export const AskAITab: React.FC = () => {
     requestAnimationFrame(() => {
       messagesContainerRef.current?.scrollToEnd({ animated });
     });
+  }, []);
+
+  const forceScrollToBottom = useCallback(() => {
+    userScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
+    scrollToLatestMessage(true);
+  }, [scrollToLatestMessage]);
+
+  const maybeScrollToEnd = useCallback((animated: boolean = true) => {
+    if (userScrolledUpRef.current) return;
+    requestAnimationFrame(() => {
+      messagesContainerRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
+  const SCROLL_BOTTOM_THRESHOLD = 100;
+  const handleListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    const fromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    const scrolledUp = fromBottom > SCROLL_BOTTOM_THRESHOLD;
+    userScrolledUpRef.current = scrolledUp;
+    setIsUserScrolledUp(scrolledUp);
   }, []);
 
   // Map API messages to UI messages
@@ -185,6 +230,8 @@ export const AskAITab: React.FC = () => {
 
         if (isMounted) {
           setMessages(history);
+          userScrolledUpRef.current = false;
+          setIsUserScrolledUp(false);
           scrollToLatestMessage(false);
         }
       } catch (e) {
@@ -203,11 +250,17 @@ export const AskAITab: React.FC = () => {
     };
   }, [ensureConversation, isAllowed, jobId, mapCopilotMessageToUi, scrollToLatestMessage, user?.id]);
 
-  // Scroll to latest message when messages change
+  // Pin to bottom when new content arrives unless the user scrolled up
   useEffect(() => {
     if (messages.length === 0) return;
-    scrollToLatestMessage();
-  }, [messages.length, scrollToLatestMessage]);
+    maybeScrollToEnd(true);
+  }, [messages, streamingMessageId, maybeScrollToEnd]);
+
+  // Ensure latest message is visible when the tab first mounts with data
+  useEffect(() => {
+    scrollToLatestMessage(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
+  }, []);
 
   /**
    * Main message handler - supports text, voice, and images
@@ -312,77 +365,124 @@ export const AskAITab: React.FC = () => {
             let streamedContent = '';
             let messageCreated = false;
 
+            thinkingStartedAtRef.current = Date.now();
+            setIsThinking(true);
+
             try {
               await copilotChatService.streamMessage({
                 conversationId: convId,
                 content,
                 senderId: user?.id ? String(user.id) : undefined,
                 onEvent: (event) => {
-                  if (event.type === 'chunk' && event.content) {
-                    // Create message only when first chunk arrives
+                  if (event.type === 'thinking') {
+                    setIsThinking(true);
+                  } else if (event.type === 'chunk' && event.content) {
                     if (!messageCreated) {
                       messageCreated = true;
+                      const start = thinkingStartedAtRef.current ?? Date.now();
+                      const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                      setIsThinking(false);
+                      streamingMessageIdRef.current = aiMessageId;
+                      setStreamingMessageId(aiMessageId);
+                      streamedContent = event.content;
                       setMessages((prev) => [
                         ...prev,
                         {
                           id: aiMessageId,
                           role: 'assistant',
-                          content: '',
+                          content: streamedContent,
                           timestamp: new Date(),
                           attachments: [],
+                          thoughtDurationSeconds: thoughtSecs,
                         },
                       ]);
+                      addToQueue(event.content);
+                    } else {
+                      streamedContent += event.content;
+                      setMessages((prev) =>
+                        prev.map((msg) =>
+                          msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
+                        )
+                      );
+                      addToQueue(event.content);
                     }
-                    // Accumulate streamed content token by token
-                    streamedContent += event.content;
-                    setMessages((prev) =>
-                      prev.map((msg) =>
-                        msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
-                      )
-                    );
-                    // Add token to TTS queue for voice playback
-                    addToQueue(event.content);
                   } else if (event.type === 'done' && event.data) {
-                    // Flush any remaining TTS buffer
                     flush();
-                    // Create message if it wasn't created during streaming (no chunks received)
                     if (!messageCreated) {
                       messageCreated = true;
+                      const start = thinkingStartedAtRef.current ?? Date.now();
+                      const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                      setIsThinking(false);
                       const finalAi = mapCopilotMessageToUi(event.data);
+                      streamingMessageIdRef.current = aiMessageId;
+                      setStreamingMessageId(aiMessageId);
                       setMessages((prev) => [
                         ...prev,
-                        { ...finalAi, id: finalAi.id || aiMessageId },
+                        {
+                          ...finalAi,
+                          id: finalAi.id || aiMessageId,
+                          thoughtDurationSeconds: thoughtSecs,
+                        },
                       ]);
                     } else {
-                    // Finalize with complete server message
-                    const finalAi = mapCopilotMessageToUi(event.data);
-                    setMessages((prev) =>
-                      prev.map((msg) =>
-                        msg.id === aiMessageId
-                          ? { ...finalAi, id: finalAi.id || aiMessageId }
-                          : msg
-                      )
-                    );
+                      const finalAi = mapCopilotMessageToUi(event.data);
+                      setMessages((prev) =>
+                        prev.map((msg) =>
+                          msg.id === aiMessageId
+                            ? {
+                                ...finalAi,
+                                id: finalAi.id || aiMessageId,
+                                thoughtDurationSeconds: msg.thoughtDurationSeconds,
+                              }
+                            : msg
+                        )
+                      );
                     }
                   } else if (event.type === 'error') {
                     console.warn('[AskAI] Stream error:', event.error);
-                    stopTTS(); // Stop TTS on error
+                    setIsThinking(false);
+                    stopTTS();
                   }
                 },
               });
             } catch (streamErr) {
               console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
-              stopTTS(); // Stop TTS on stream error
-              
-              // Fallback: Use non-streaming API if XMLHttpRequest fails
+              stopTTS();
+
               const { aiMessage } = await copilotChatService.sendMessage({
                 conversationId: convId,
                 content,
                 senderId: user?.id ? String(user.id) : undefined,
               });
 
-              setMessages((prev) =>
-                prev.map((msg) =>
+              const thoughtSecs = Math.max(
+                1,
+                Math.round((Date.now() - (thinkingStartedAtRef.current ?? Date.now())) / 1000)
+              );
+              setIsThinking(false);
+
+              setMessages((prev) => {
+                if (!messageCreated) {
+                  return [
+                    ...prev,
+                    {
+                      id: aiMessage.id,
+                      role: 'assistant',
+                      content: aiMessage.content ?? streamedContent,
+                      timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
+                      attachments: (aiMessage.attachments || []).map((a) => ({
+                        id: a.id,
+                        fileName: a.fileName,
+                        fileType: a.fileType,
+                        fileSize: a.fileSize,
+                        url: a.url,
+                        presignedUrl: a.presignedUrl,
+                      })),
+                      thoughtDurationSeconds: thoughtSecs,
+                    },
+                  ];
+                }
+                return prev.map((msg) =>
                   msg.id === aiMessageId
                     ? {
                         id: aiMessage.id,
@@ -397,10 +497,11 @@ export const AskAITab: React.FC = () => {
                           url: a.url,
                           presignedUrl: a.presignedUrl,
                         })),
+                        thoughtDurationSeconds: msg.thoughtDurationSeconds ?? thoughtSecs,
                       }
                     : msg
-                )
-              );
+                );
+              });
             }
           } catch (uploadErr) {
             console.warn('[AskAI] Image upload failed', uploadErr);
@@ -410,24 +511,15 @@ export const AskAITab: React.FC = () => {
         } else {
           /**
            * Stream text/voice message response
-           * 
-           * Creates empty AI message and fills it with streamed tokens.
-           * Provides real-time typing effect like ChatGPT.
+           *
+           * Assistant row appears on first chunk (copilot-style Thinking... indicator until then).
            */
           const aiMessageId = `ai-${Date.now()}`;
           let streamedContent = '';
+          let messageCreated = false;
 
-          // Create temporary AI message for streaming
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: aiMessageId,
-              role: 'assistant',
-              content: '',
-              timestamp: new Date(),
-              attachments: [],
-            },
-          ]);
+          thinkingStartedAtRef.current = Date.now();
+          setIsThinking(true);
 
           try {
             await copilotChatService.streamMessage({
@@ -436,59 +528,122 @@ export const AskAITab: React.FC = () => {
               senderId: user?.id ? String(user.id) : undefined,
               onEvent: (event) => {
                 if (event.type === 'user_message' && event.data) {
-                  // Update user message with confirmed server data
                   const confirmedUserMsg = mapCopilotMessageToUi(event.data);
                   setMessages((prev) =>
                     prev.map((msg) => (msg.id === tempUserMessage.id ? confirmedUserMsg : msg))
                   );
+                } else if (event.type === 'thinking') {
+                  setIsThinking(true);
                 } else if (event.type === 'chunk' && event.content) {
-                  // Accumulate streamed content
-                  streamedContent += event.content;
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
-                    )
-                  );
-                  // Add token to TTS queue for voice playback
-                  addToQueue(event.content);
+                  if (!messageCreated) {
+                    messageCreated = true;
+                    const start = thinkingStartedAtRef.current ?? Date.now();
+                    const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                    setIsThinking(false);
+                    streamingMessageIdRef.current = aiMessageId;
+                    setStreamingMessageId(aiMessageId);
+                    streamedContent = event.content;
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: aiMessageId,
+                        role: 'assistant',
+                        content: streamedContent,
+                        timestamp: new Date(),
+                        attachments: [],
+                        thoughtDurationSeconds: thoughtSecs,
+                      },
+                    ]);
+                    addToQueue(event.content);
+                  } else {
+                    streamedContent += event.content;
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
+                      )
+                    );
+                    addToQueue(event.content);
+                  }
                 } else if (event.type === 'done' && event.data) {
-                  // Flush any remaining TTS buffer
                   flush();
-                  // Finalize with server message
-                  const finalAi = mapCopilotMessageToUi(event.data);
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === aiMessageId
-                        ? { ...finalAi, id: finalAi.id || aiMessageId }
-                        : msg
-                    )
-                  );
+                  if (!messageCreated) {
+                    messageCreated = true;
+                    const start = thinkingStartedAtRef.current ?? Date.now();
+                    const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                    setIsThinking(false);
+                    const finalAi = mapCopilotMessageToUi(event.data);
+                    streamingMessageIdRef.current = aiMessageId;
+                    setStreamingMessageId(aiMessageId);
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        ...finalAi,
+                        id: finalAi.id || aiMessageId,
+                        thoughtDurationSeconds: thoughtSecs,
+                      },
+                    ]);
+                  } else {
+                    const finalAi = mapCopilotMessageToUi(event.data);
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === aiMessageId
+                          ? {
+                              ...finalAi,
+                              id: finalAi.id || aiMessageId,
+                              thoughtDurationSeconds: msg.thoughtDurationSeconds,
+                            }
+                          : msg
+                      )
+                    );
+                  }
                 } else if (event.type === 'error') {
                   console.warn('[AskAI] Stream error:', event.error);
-                  stopTTS(); // Stop TTS on error
+                  setIsThinking(false);
+                  stopTTS();
                 }
               },
             });
           } catch (streamErr) {
             console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
-            stopTTS(); // Stop TTS on stream error
-            // Fallback to non-streaming if stream fails
+            stopTTS();
+
             const { userMessage, aiMessage } = await copilotChatService.sendMessage({
               conversationId: convId,
               content,
               senderId: user?.id ? String(user.id) : undefined,
             });
 
-            // Update user message
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === tempUserMessage.id ? mapCopilotMessageToUi(userMessage) : msg
-              )
+            const thoughtSecs = Math.max(
+              1,
+              Math.round((Date.now() - (thinkingStartedAtRef.current ?? Date.now())) / 1000)
             );
+            setIsThinking(false);
 
-            // Update AI message
-            setMessages((prev) =>
-              prev.map((msg) =>
+            setMessages((prev) => {
+              const withUser = prev.map((msg) =>
+                msg.id === tempUserMessage.id ? mapCopilotMessageToUi(userMessage) : msg
+              );
+              if (!messageCreated) {
+                return [
+                  ...withUser,
+                  {
+                    id: aiMessage.id,
+                    role: 'assistant',
+                    content: aiMessage.content ?? streamedContent,
+                    timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
+                    attachments: (aiMessage.attachments || []).map((a) => ({
+                      id: a.id,
+                      fileName: a.fileName,
+                      fileType: a.fileType,
+                      fileSize: a.fileSize,
+                      url: a.url,
+                      presignedUrl: a.presignedUrl,
+                    })),
+                    thoughtDurationSeconds: thoughtSecs,
+                  },
+                ];
+              }
+              return withUser.map((msg) =>
                 msg.id === aiMessageId
                   ? {
                       id: aiMessage.id,
@@ -503,17 +658,23 @@ export const AskAITab: React.FC = () => {
                         url: a.url,
                         presignedUrl: a.presignedUrl,
                       })),
+                      thoughtDurationSeconds: msg.thoughtDurationSeconds ?? thoughtSecs,
                     }
                   : msg
-              )
-            );
+              );
+            });
           }
         }
       } catch (err) {
         console.warn('[AskAI] Send failed', err);
-        stopTTS(); // Stop TTS on error
+        stopTTS();
+        setIsThinking(false);
       } finally {
         setIsLoading(false);
+        setIsThinking(false);
+        setStreamingMessageId(null);
+        streamingMessageIdRef.current = null;
+        thinkingStartedAtRef.current = null;
       }
     },
     [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
@@ -634,14 +795,14 @@ export const AskAITab: React.FC = () => {
         // (before calling handleSendMessage which might take a while with image uploads)
         setIsTranscribing(false);
 
-        if (resp?.text) {
-          // If there are pending images, send them with the transcribed text
-          // Otherwise, send as regular voice message
-          await handleSendMessage(resp.text, pendingImages.length > 0 ? 'image' : 'voice');
+        if (resp?.text?.trim()) {
+          await handleSendMessage(resp.text.trim(), pendingImages.length > 0 ? 'image' : 'voice');
           return;
         }
 
-        throw new Error('No transcription returned from voice service');
+        if (__DEV__) {
+          console.log('[AskAI] No speech detected in recording, ignoring');
+        }
       } catch (error) {
         console.error('[AskAI] Voice transcription failed:', error);
         setIsTranscribing(false); // Ensure state is cleared on error
@@ -658,7 +819,7 @@ export const AskAITab: React.FC = () => {
         <View style={styles.iconPulse} />
         <View style={styles.iconRing} />
         <View style={styles.iconInner}>
-          <Ionicons name="mic" size={32} color={colors.primary} />
+          <Ionicons name="sparkles" size={32} color={colors.primary} />
         </View>
       </View>
       <View style={styles.emptyTextContainer}>
@@ -672,22 +833,33 @@ export const AskAITab: React.FC = () => {
     </View>
   );
 
-  // Render processing indicators
   const renderProcessingIndicator = () => {
-    if (!isLoading && !isSpeaking && !isTranscribing) return null;
-
-    return (
-      <View style={styles.processingContainer}>
-        <View style={[styles.processingIcon, { backgroundColor: `${colors.primary}15` }]}>
+    if (isTranscribing) {
+      return (
+        <View style={styles.processingContainer}>
           <ActivityIndicator size="small" color={colors.primary} />
+          <Ionicons name="mic-outline" size={18} color={colors.textSecondary} />
+          <ThemedText style={[styles.processingText, { color: colors.textSecondary }]}>
+            Converting voice...
+          </ThemedText>
         </View>
-        <ThemedText style={[styles.processingText, { color: colors.textSecondary }]}>
-          {isTranscribing && '🎤 Converting voice...'}
-          {!isTranscribing && isLoading && '🤔 Clara is thinking...'}
-          {!isTranscribing && !isLoading && isSpeaking && '🔊 Clara is speaking...'}
-        </ThemedText>
-      </View>
-    );
+      );
+    }
+    if (isThinking) {
+      return <ThinkingIndicator isThinking />;
+    }
+    if (!isLoading && isSpeaking) {
+      return (
+        <View style={styles.processingContainer}>
+          <View style={[styles.speakingPulse, { backgroundColor: `${colors.success}40` }]} />
+          <Ionicons name="radio-outline" size={18} color={colors.textSecondary} />
+          <ThemedText style={[styles.processingText, { color: colors.textSecondary }]}>
+            Clara is speaking...
+          </ThemedText>
+        </View>
+      );
+    }
+    return null;
   };
 
   // Not assigned view
@@ -710,8 +882,13 @@ export const AskAITab: React.FC = () => {
   const bottomPadding = Math.max(8, insets.bottom);
 
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => <ChatMessage message={item} />,
-    []
+    ({ item }: { item: Message }) => (
+      <ChatMessage
+        message={item}
+        isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
+      />
+    ),
+    [streamingMessageId]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -722,18 +899,24 @@ export const AskAITab: React.FC = () => {
       isTranscribing,
       isSpeaking,
       isUploadingImages,
+      isThinking,
+      streamingMessageId,
     }),
-    [isLoading, isTranscribing, isSpeaking, isUploadingImages]
+    [isLoading, isTranscribing, isSpeaking, isUploadingImages, isThinking, streamingMessageId]
   );
+
+  const showJumpToLatest =
+    isUserScrolledUp && (Boolean(streamingMessageId) || isLoading || isThinking);
 
   const HORIZONTAL_PADDING = 12;
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['left', 'right']}>
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Messages Area */}
+      <View style={styles.messagesArea}>
       <FlatList
         ref={messagesContainerRef}
+        style={styles.messagesFlatList}
         data={messages}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
@@ -746,11 +929,23 @@ export const AskAITab: React.FC = () => {
         ListFooterComponent={renderProcessingIndicator}
         contentContainerStyle={[styles.messagesList, { paddingHorizontal: HORIZONTAL_PADDING }]}
         showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => scrollToLatestMessage(false)}
-        onLayout={() => scrollToLatestMessage(false)}
+        onContentSizeChange={() => maybeScrollToEnd(false)}
+        onScroll={handleListScroll}
+        scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
       />
+      {showJumpToLatest && (
+        <Pressable
+          style={[styles.jumpButton, { backgroundColor: colors.primary }]}
+          onPress={forceScrollToBottom}
+          accessibilityRole="button"
+          accessibilityLabel="Jump to latest message">
+          <Ionicons name="chevron-down" size={16} color="#ffffff" />
+          <ThemedText style={styles.jumpButtonText}>Jump to latest</ThemedText>
+        </Pressable>
+      )}
+      </View>
 
       {/* Voice Input Controls */}
       <View
@@ -797,6 +992,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   container: {
+    flex: 1,
+  },
+  messagesArea: {
+    flex: 1,
+    position: 'relative',
+  },
+  messagesFlatList: {
     flex: 1,
   },
   messagesList: {
@@ -857,18 +1059,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginBottom: 16,
-    paddingHorizontal: 16,
+    paddingHorizontal: 4,
   },
-  processingIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+  speakingPulse: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   processingText: {
     fontSize: 12,
     flex: 1,
+  },
+  jumpButton: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  jumpButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   inputArea: {
     borderTopWidth: 1,

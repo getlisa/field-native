@@ -4,6 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 
 import JobsList from '@/components/jobs/JobsList';
 import { ThemedText } from '@/components/themed-text';
@@ -11,6 +12,7 @@ import { Button } from '@/components/ui';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useAuth } from '@/hooks/useAuth';
 import { useJobs } from '@/hooks/useJobs';
+import { COMPANY_CONFIGS_QUERY_KEY } from '@/hooks/useCompanyConfigs';
 import type { Job, JobFilterOptions } from '@/services/jobService';
 import { Spacing, FontSizes } from '@/constants/theme';
 
@@ -19,24 +21,55 @@ export default function JobsTab() {
   const { colors } = useTheme();
   const { companyId: authedCompanyId, user } = useAuth();
   const { jobs, error, loading, fetchJobs } = useJobs();
+  const queryClient = useQueryClient();
+  const companyIdNumber = authedCompanyId ? Number(authedCompanyId) : undefined;
+  const shouldRefetchConfigs =
+    companyIdNumber !== undefined && Number.isFinite(companyIdNumber);
   
   // Store current filter state to persist across refreshes
   const [currentFilters, setCurrentFilters] = useState<JobFilterOptions | undefined>(undefined);
 
-  // Initial load
+  // useJobs starts with loading false; only treat "initial load" as done after we've seen loading then idle once
+  const [hasCompletedInitialFetch, setHasCompletedInitialFetch] = useState(false);
+  const sawLoadingRef = useRef(false);
   useEffect(() => {
-    if (authedCompanyId) {
-      fetchJobs(authedCompanyId, currentFilters);
+    if (loading) sawLoadingRef.current = true;
+    if (sawLoadingRef.current && !loading) {
+      setHasCompletedInitialFetch(true);
     }
-  }, [authedCompanyId, fetchJobs]);
+  }, [loading]);
 
-  // Refetch jobs when navigating back to this tab (e.g., after completing a job)
+  const currentFiltersRef = useRef(currentFilters);
+  currentFiltersRef.current = currentFilters;
+
+  // Jobs fetch only — do not refetch company configs on every search/pull (avoids spam + extra work)
+  const refreshJobsOnly = useCallback(
+    (filters?: JobFilterOptions, opts?: { force?: boolean }) => {
+      if (authedCompanyId) {
+        fetchJobs(authedCompanyId, filters, { force: opts?.force });
+      }
+    },
+    [authedCompanyId, fetchJobs]
+  );
+
+  const refetchCompanyConfigs = useCallback(() => {
+    if (shouldRefetchConfigs) {
+      queryClient.refetchQueries({ queryKey: [COMPANY_CONFIGS_QUERY_KEY, companyIdNumber] });
+    }
+  }, [shouldRefetchConfigs, queryClient, companyIdNumber]);
+
+  // Initial load when auth is ready
+  useEffect(() => {
+    refreshJobsOnly(undefined);
+    refetchCompanyConfigs();
+  }, [authedCompanyId, refreshJobsOnly, refetchCompanyConfigs]);
+
+  // Refetch when navigating back to this tab — use ref so filter changes while focused do not retrigger this
   useFocusEffect(
     useCallback(() => {
-      if (authedCompanyId) {
-        fetchJobs(authedCompanyId, currentFilters);
-      }
-    }, [authedCompanyId, fetchJobs, currentFilters])
+      refreshJobsOnly(currentFiltersRef.current);
+      refetchCompanyConfigs();
+    }, [refreshJobsOnly, refetchCompanyConfigs])
   );
 
   const handleJobPress = useCallback(
@@ -46,22 +79,20 @@ export default function JobsTab() {
     [router]
   );
 
-  const handleRefresh = useCallback((filters?: JobFilterOptions) => {
-    // Update stored filters if new ones are provided
-    if (filters !== undefined) {
-      setCurrentFilters(filters);
-    }
-    
-    // Always use current filters (either newly provided or stored)
-    const filtersToUse = filters !== undefined ? filters : currentFilters;
-    
-    if (authedCompanyId) {
-      fetchJobs(authedCompanyId, filtersToUse);
-    }
-  }, [authedCompanyId, fetchJobs, currentFilters]);
+  const handleRefresh = useCallback(
+    (filters?: JobFilterOptions) => {
+      if (filters !== undefined) {
+        setCurrentFilters(filters);
+      }
+      const filtersToUse = filters !== undefined ? filters : currentFilters;
+      // Force a new fetch when user explicitly refreshes/searches/applies filters.
+      refreshJobsOnly(filtersToUse, { force: true });
+    },
+    [refreshJobsOnly, currentFilters]
+  );
 
-  // Loading state (initial load)
-  if (loading && jobs.length === 0) {
+  // Full-screen loading only for the first in-flight fetch (not when searching with an already-empty list)
+  if (loading && jobs.length === 0 && !hasCompletedInitialFetch) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.header}>
@@ -110,7 +141,6 @@ export default function JobsTab() {
         error={error}
         currentUser={user}
         currentFilters={currentFilters}
-        onFiltersChange={setCurrentFilters}
       />
     </SafeAreaView>
   );
