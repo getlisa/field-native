@@ -84,6 +84,9 @@ interface MultiModalInputProps {
   isUploadingImages?: boolean;
   onStopSpeaking?: () => void;
   disabled?: boolean;
+  /** Estimate Cost demo mode toggle state. */
+  estimateMode?: boolean;
+  onToggleEstimateMode?: () => void;
 }
 
 export const MultiModalInput: React.FC<MultiModalInputProps> = ({
@@ -101,6 +104,8 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   isUploadingImages = false,
   onStopSpeaking,
   disabled = false,
+  estimateMode = false,
+  onToggleEstimateMode,
 }) => {
   const { colors } = useTheme();
   const [textInput, setTextInput] = useState('');
@@ -387,7 +392,12 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   const hasPendingImages = pendingImages.length > 0;
   const hasText = textInput.trim().length > 0;
   // Text is always required (either typed or via voice transcription) for the /stream call
-  const canSend = hasText && !isLoading && !isUploadingImages && !disabled;
+  // Normal mode: text is always required. Estimate mode: a photo alone is enough.
+  const canSend =
+    (estimateMode ? hasText || hasPendingImages : hasText) &&
+    !isLoading &&
+    !isUploadingImages &&
+    !disabled;
 
   const handleSend = useCallback(() => {
     if (!canSend) return;
@@ -1125,6 +1135,17 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {estimateMode && (
+        <View style={styles.estimateChipRow}>
+          <View style={[styles.estimateChip, { backgroundColor: colors.primaryLight }]}>
+            <Ionicons name="receipt-outline" size={13} color={colors.primary} />
+            <ThemedText style={[styles.estimateChipText, { color: colors.primary }]}>
+              Estimate mode
+            </ThemedText>
+            <View style={[styles.estimateChipDot, { backgroundColor: colors.primary }]} />
+          </View>
+        </View>
+      )}
       {hasPendingImages && (
         <View
           style={[
@@ -1247,6 +1268,26 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             <Ionicons name="camera-outline" size={18} color={colors.textSecondary} />
           </Pressable>
 
+          {/* Estimate Cost toggle */}
+          {onToggleEstimateMode && (
+            <Pressable
+              style={[
+                styles.iconButton,
+                { backgroundColor: estimateMode ? colors.primary : colors.backgroundSecondary },
+              ]}
+              onPress={onToggleEstimateMode}
+              disabled={isLoading || isRecording || isTranscribing || disabled}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle Estimate Cost mode"
+              accessibilityState={{ selected: estimateMode }}>
+              <Ionicons
+                name="receipt-outline"
+                size={18}
+                color={estimateMode ? '#ffffff' : colors.textSecondary}
+              />
+            </Pressable>
+          )}
+
           <Pressable
             style={[
               styles.iconButton,
@@ -1305,6 +1346,26 @@ const styles = StyleSheet.create({
   container: {
     gap: 12,
     paddingHorizontal: 12,
+  },
+  estimateChipRow: {
+    flexDirection: 'row',
+  },
+  estimateChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  estimateChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  estimateChipDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   imagesPreview: {
     flexDirection: 'row',

@@ -49,7 +49,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
-import type { Message, PendingImage } from '@/components/chat/types';
+import type { EstimateQuote, Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
@@ -73,6 +73,9 @@ export const AskAITab: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  // Estimate Cost demo mode — sticky toggle in the chat bar. Routes the next send
+  // to the estimate endpoint instead of the normal copilot stream.
+  const [estimateMode, setEstimateMode] = useState(false);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
@@ -271,8 +274,192 @@ export const AskAITab: React.FC = () => {
    * 
    * Streaming uses XMLHttpRequest for React Native compatibility
    */
+  /**
+   * Estimate Cost (demo) handler.
+   *
+   * Routes to the self-contained estimate endpoint. Sends the (optional) note plus the
+   * captured photo as inline base64, streams the markdown estimate, and attaches the
+   * structured `quote` to the assistant message so ChatMessage can render the quote card.
+   */
+  const handleSendEstimate = useCallback(
+    async (content: string) => {
+      const hasContent = content.trim().length > 0;
+      const imagesForEstimate = pendingImages;
+      const hasImages = imagesForEstimate.length > 0;
+      if (!isAllowed || (!hasContent && !hasImages)) return;
+
+      // Optimistic user message (with the captured photo shown via its local uri)
+      const tempUserMessage: Message = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content,
+        timestamp: new Date(),
+        contentType: hasImages ? 'IMAGE' : 'TEXT',
+        attachments: imagesForEstimate.map((img) => ({
+          id: img.id,
+          fileName: img.name || '',
+          fileType: img.type || 'image/jpeg',
+          fileSize: 0,
+          url: img.uri,
+        })),
+      };
+      setMessages((prev) => [...prev, tempUserMessage]);
+      setIsLoading(true);
+      setPendingImages([]);
+
+      try {
+        const convId = await ensureConversation();
+        if (!convId) {
+          console.warn('[AskAI] No conversation ID, aborting estimate');
+          return;
+        }
+
+        // Read the captured photo to base64 (no data: prefix, per the endpoint contract)
+        let imageBase64: string | undefined;
+        let imageMimeType: string | undefined;
+        const firstImage = imagesForEstimate[0];
+        if (firstImage) {
+          try {
+            imageBase64 = await FileSystem.readAsStringAsync(firstImage.uri, {
+              encoding: 'base64',
+            });
+            imageMimeType = firstImage.type || 'image/jpeg';
+          } catch (readErr) {
+            console.warn('[AskAI] Failed to read estimate image for base64', readErr);
+          }
+        }
+
+        const aiMessageId = `ai-${Date.now()}`;
+        let streamedContent = '';
+        let messageCreated = false;
+        let quoteData: EstimateQuote | undefined;
+
+        thinkingStartedAtRef.current = Date.now();
+        setIsThinking(true);
+
+        await copilotChatService.streamEstimate({
+          conversationId: convId,
+          content: hasContent ? content : undefined,
+          imageBase64,
+          imageMimeType,
+          senderId: user?.id ? String(user.id) : undefined,
+          onEvent: (event) => {
+            if (event.type === 'user_message' && event.data) {
+              const confirmedUserMsg = mapCopilotMessageToUi(event.data);
+              setMessages((prev) =>
+                prev.map((msg) => (msg.id === tempUserMessage.id ? confirmedUserMsg : msg))
+              );
+            } else if (event.type === 'thinking') {
+              setIsThinking(true);
+            } else if (event.type === 'chunk' && event.content) {
+              if (!messageCreated) {
+                messageCreated = true;
+                const start = thinkingStartedAtRef.current ?? Date.now();
+                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                setIsThinking(false);
+                streamingMessageIdRef.current = aiMessageId;
+                setStreamingMessageId(aiMessageId);
+                streamedContent = event.content;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: aiMessageId,
+                    role: 'assistant',
+                    content: streamedContent,
+                    timestamp: new Date(),
+                    attachments: [],
+                    thoughtDurationSeconds: thoughtSecs,
+                    metadata: { mode: 'estimate', quote: quoteData },
+                  },
+                ]);
+                addToQueue(event.content);
+              } else {
+                streamedContent += event.content;
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
+                  )
+                );
+                addToQueue(event.content);
+              }
+            } else if (event.type === 'quote' && event.data) {
+              // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
+              quoteData = event.data as unknown as EstimateQuote;
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === aiMessageId
+                    ? { ...msg, metadata: { ...msg.metadata, mode: 'estimate', quote: quoteData } }
+                    : msg
+                )
+              );
+            } else if (event.type === 'done' && event.data) {
+              flush();
+              const finalAi = mapCopilotMessageToUi(event.data);
+              const finalMeta = {
+                ...(finalAi.metadata ?? {}),
+                mode: 'estimate' as const,
+                quote: quoteData ?? finalAi.metadata?.quote,
+              };
+              if (!messageCreated) {
+                messageCreated = true;
+                const start = thinkingStartedAtRef.current ?? Date.now();
+                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                setIsThinking(false);
+                streamingMessageIdRef.current = aiMessageId;
+                setStreamingMessageId(aiMessageId);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    ...finalAi,
+                    id: finalAi.id || aiMessageId,
+                    thoughtDurationSeconds: thoughtSecs,
+                    metadata: finalMeta,
+                  },
+                ]);
+              } else {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? {
+                          ...finalAi,
+                          id: finalAi.id || aiMessageId,
+                          thoughtDurationSeconds: msg.thoughtDurationSeconds,
+                          metadata: finalMeta,
+                        }
+                      : msg
+                  )
+                );
+              }
+            } else if (event.type === 'error') {
+              console.warn('[AskAI] Estimate stream error:', event.error);
+              setIsThinking(false);
+              stopTTS();
+            }
+          },
+        });
+      } catch (err) {
+        console.warn('[AskAI] Estimate send failed', err);
+        stopTTS();
+        setIsThinking(false);
+      } finally {
+        setIsLoading(false);
+        setIsThinking(false);
+        setStreamingMessageId(null);
+        streamingMessageIdRef.current = null;
+        thinkingStartedAtRef.current = null;
+      }
+    },
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
+  );
+
   const handleSendMessage = useCallback(
     async (content: string, _type: 'text' | 'voice' | 'image') => {
+      // Estimate Cost mode routes to the dedicated estimate endpoint.
+      if (estimateMode) {
+        await handleSendEstimate(content);
+        return;
+      }
+
       const hasContent = content.trim().length > 0;
       const hasImages = pendingImages.length > 0;
       if (!isAllowed || (!hasContent && !hasImages)) return;
@@ -677,7 +864,7 @@ export const AskAITab: React.FC = () => {
         thinkingStartedAtRef.current = null;
       }
     },
-    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS, estimateMode, handleSendEstimate]
   );
 
   // Handle image selection (from camera or gallery)
@@ -980,6 +1167,8 @@ export const AskAITab: React.FC = () => {
           isUploadingImages={isUploadingImages}
           onStopSpeaking={handleStopSpeaking}
           disabled={!canUseAskAI}
+          estimateMode={estimateMode}
+          onToggleEstimateMode={() => setEstimateMode((v) => !v)}
         />
       </View>
       </View>
