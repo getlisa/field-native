@@ -1197,6 +1197,21 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           editable={!isLoading && !isUploadingImages && !disabled}
           style={[styles.textInput, { color: colors.text }]}
         />
+        <Pressable
+          style={[
+            styles.inlineSendButton,
+            { backgroundColor: canSend ? colors.primary : colors.backgroundTertiary },
+          ]}
+          onPress={handleSend}
+          disabled={!canSend}
+          accessibilityRole="button"
+          accessibilityLabel="Send message">
+          {isUploadingImages ? (
+            <ActivityIndicator size="small" color="#ffffff" />
+          ) : (
+            <Ionicons name="send" size={18} color={canSend ? '#ffffff' : colors.textTertiary} />
+          )}
+        </Pressable>
       </View>
 
       <View style={styles.actionsRow}>
@@ -1303,24 +1318,6 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
             )}
           </Pressable>
         </View>
-
-        <Pressable
-          style={[
-            styles.sendButton,
-            { backgroundColor: colors.primary },
-            !canSend && styles.sendButtonDisabled,
-          ]}
-          onPress={handleSend}
-          disabled={!canSend}>
-          {isUploadingImages ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <Ionicons name="send" size={16} color="#ffffff" />
-          )}
-          <ThemedText style={styles.sendButtonText}>
-            {isUploadingImages ? 'Sending...' : 'Send'}
-          </ThemedText>
-        </Pressable>
       </View>
 
       {wearablesStatus?.lastError ? (
@@ -1421,15 +1418,27 @@ const styles = StyleSheet.create({
     color: '#6b7280',
   },
   inputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
     borderRadius: 12,
     borderWidth: 1,
+    paddingRight: 6,
   },
   textInput: {
+    flex: 1,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
     minHeight: 44,
     maxHeight: 100,
+  },
+  inlineSendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
   },
   actionsRow: {
     flexDirection: 'row',
