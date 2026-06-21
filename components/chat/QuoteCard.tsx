@@ -19,6 +19,21 @@ const TYPE_VARIANT: Record<EstimateLineItemType, BadgeVariant> = {
   other: 'default',
 };
 
+/** Coerce a value (number, numeric string like "$18.00", or junk) to a number; NaN if not parseable. */
+const toNum = (value: unknown): number => {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return parseFloat(value.replace(/[^0-9.eE+-]/g, ''));
+  return NaN;
+};
+
+/** Resolved amount for a line item: its `amount`, else quantity * unitCost. */
+const lineItemAmount = (item: { amount?: unknown; quantity?: unknown; unitCost?: unknown }): number => {
+  const amt = toNum(item.amount);
+  if (Number.isFinite(amt)) return amt;
+  const computed = toNum(item.quantity) * toNum(item.unitCost);
+  return Number.isFinite(computed) ? computed : NaN;
+};
+
 /**
  * Structured cost-estimate card for the Estimate Cost demo mode.
  * Renders identified equipment, repair-vs-replace decision, line items, total,
@@ -29,23 +44,37 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote }) => {
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
 
   const formatCurrency = useMemo(() => {
-    return (value: number) => {
+    const currency = quote.currency || 'USD';
+    return (value: unknown) => {
+      const n = toNum(value);
+      if (!Number.isFinite(n)) return '—';
       try {
         return new Intl.NumberFormat(undefined, {
           style: 'currency',
-          currency: quote.currency || 'USD',
+          currency,
           maximumFractionDigits: 2,
-        }).format(value);
+        }).format(n);
       } catch {
-        return `${quote.currency || '$'}${value.toFixed(2)}`;
+        return `$${n.toFixed(2)}`;
       }
     };
   }, [quote.currency]);
 
   const { identifiedEquipment: eq } = quote;
   const isReplace = eq.decision === 'replace';
-  const confidencePct = Math.round((eq.confidence ?? 0) * 100);
+  const confidencePct = Math.round((toNum(eq.confidence) || 0) * 100);
   const title = [eq.brand, eq.model].filter(Boolean).join(' ') || eq.category || 'Identified equipment';
+
+  // Tolerate best-effort / differently-shaped payloads.
+  const lineItems = Array.isArray(quote.lineItems) ? quote.lineItems : [];
+  const lineItemsTotal = lineItems.reduce((sum, it) => {
+    const amt = lineItemAmount(it);
+    return sum + (Number.isFinite(amt) ? amt : 0);
+  }, 0);
+  // Prefer an explicit total; fall back to subtotal, then the summed line items.
+  const totalCandidate = [quote.total, quote.subtotal].map(toNum).find((n) => Number.isFinite(n));
+  const resolvedTotal =
+    totalCandidate !== undefined ? totalCandidate : lineItems.length > 0 ? lineItemsTotal : NaN;
 
   return (
     <View
@@ -100,30 +129,40 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote }) => {
         </ThemedText>
       </View>
 
-      {quote.lineItems?.map((item, index) => {
-        const isLabor = item.type === 'labor';
-        return (
-          <View key={`${item.label}-${index}`} style={styles.itemRow}>
-            <View style={styles.colItem}>
-              <ThemedText style={[styles.itemLabel, { color: colors.text }]} numberOfLines={2}>
-                {item.label}
+      {lineItems.length === 0 ? (
+        <ThemedText style={[styles.cellText, styles.emptyItems, { color: colors.textTertiary }]}>
+          No line items provided.
+        </ThemedText>
+      ) : (
+        lineItems.map((item, index) => {
+          const isLabor = item.type === 'labor';
+          const qty = toNum(item.quantity);
+          const qtyLabel = Number.isFinite(qty) ? (isLabor ? `${qty}h` : `${qty}`) : '—';
+          return (
+            <View key={`${item.label}-${index}`} style={styles.itemRow}>
+              <View style={styles.colItem}>
+                <ThemedText style={[styles.itemLabel, { color: colors.text }]} numberOfLines={2}>
+                  {item.label}
+                </ThemedText>
+                {item.type ? (
+                  <Badge variant={TYPE_VARIANT[item.type] ?? 'default'} size="sm" style={styles.typeChip}>
+                    {item.type}
+                  </Badge>
+                ) : null}
+              </View>
+              <ThemedText style={[styles.colQty, styles.cellText, { color: colors.text }]}>
+                {qtyLabel}
               </ThemedText>
-              <Badge variant={TYPE_VARIANT[item.type] ?? 'default'} size="sm" style={styles.typeChip}>
-                {item.type}
-              </Badge>
+              <ThemedText style={[styles.colUnit, styles.cellText, { color: colors.text }]}>
+                {formatCurrency(item.unitCost)}
+              </ThemedText>
+              <ThemedText style={[styles.colAmount, styles.cellText, { color: colors.text }]}>
+                {formatCurrency(lineItemAmount(item))}
+              </ThemedText>
             </View>
-            <ThemedText style={[styles.colQty, styles.cellText, { color: colors.text }]}>
-              {isLabor ? `${item.quantity}h` : item.quantity}
-            </ThemedText>
-            <ThemedText style={[styles.colUnit, styles.cellText, { color: colors.text }]}>
-              {formatCurrency(item.unitCost)}
-            </ThemedText>
-            <ThemedText style={[styles.colAmount, styles.cellText, { color: colors.text }]}>
-              {formatCurrency(item.amount)}
-            </ThemedText>
-          </View>
-        );
-      })}
+          );
+        })
+      )}
 
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
@@ -131,7 +170,7 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote }) => {
       <View style={styles.totalRow}>
         <ThemedText style={[styles.totalLabel, { color: colors.text }]}>Estimated total</ThemedText>
         <ThemedText style={[styles.totalValue, { color: colors.primary }]}>
-          {formatCurrency(quote.total)}
+          {formatCurrency(resolvedTotal)}
         </ThemedText>
       </View>
 
@@ -256,6 +295,10 @@ const styles = StyleSheet.create({
   },
   cellText: {
     fontSize: 13,
+  },
+  emptyItems: {
+    fontStyle: 'italic',
+    paddingVertical: 6,
   },
   itemLabel: {
     fontSize: 13,
