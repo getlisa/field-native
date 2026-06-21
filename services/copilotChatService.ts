@@ -36,10 +36,14 @@ export interface AudioUploadResponse {
 }
 
 export interface StreamEvent {
-  type: 'user_message' | 'thinking' | 'chunk' | 'tool_call' | 'error' | 'done';
+  type: 'user_message' | 'thinking' | 'chunk' | 'tool_call' | 'quote' | 'error' | 'done';
   content?: string;
   error?: string;
   tool?: any;
+  /**
+   * `CopilotMessage` for user_message/done. The estimate `quote` event also arrives
+   * here as an `EstimateQuote`; the estimate handler casts it.
+   */
   data?: CopilotMessage;
 }
 
@@ -413,6 +417,111 @@ export const copilotChatService = {
         content: params.content,
         senderId: params.senderId,
       }));
+    });
+  },
+
+  /**
+   * Estimate Cost (demo) — streams a markdown estimate plus a structured `quote` event.
+   * Self-contained endpoint; same SSE-over-POST framing as streamMessage.
+   * At least one of `content`, `imageUrl`, or `imageBase64` must be provided.
+   * `imageBase64` must NOT include a `data:` prefix.
+   */
+  async streamEstimate(params: {
+    conversationId: string;
+    content?: string;
+    imageUrl?: string;
+    imageBase64?: string;
+    imageMimeType?: string;
+    senderId?: string;
+    signal?: AbortSignal;
+    onEvent: (event: StreamEvent) => void;
+  }): Promise<void> {
+    const url = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/stream`;
+    if (__DEV__) {
+      console.log('[StreamEstimate] Starting stream to:', url);
+    }
+
+    // Use XMLHttpRequest for React Native compatibility (supports progressive streaming)
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.open('POST', url, true);
+
+      const headers = buildHeaders(true);
+      Object.entries(headers).forEach(([key, value]) => {
+        xhr.setRequestHeader(key, value);
+      });
+
+      let buffer = '';
+      let processedLength = 0;
+
+      const processPayload = (payload: string) => {
+        if (!payload || payload === '[DONE]') {
+          if (payload === '[DONE]') params.onEvent({ type: 'done' });
+          return;
+        }
+        try {
+          const rawEvt = JSON.parse(payload);
+          params.onEvent(this.normalizeEvent(rawEvt));
+        } catch (err) {
+          if (__DEV__) {
+            console.warn('[StreamEstimate] Failed to parse SSE payload:', payload, err);
+          }
+        }
+      };
+
+      xhr.onprogress = () => {
+        const responseText = xhr.responseText;
+        const newData = responseText.substring(processedLength);
+        processedLength = responseText.length;
+
+        buffer += newData;
+
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(':')) continue;
+          if (!trimmed.startsWith('data:')) continue;
+          processPayload(trimmed.slice(5).trim());
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const trimmed = buffer.trim();
+          if (trimmed.startsWith('data:')) {
+            processPayload(trimmed.slice(5).trim());
+          }
+          if (__DEV__) {
+            console.log('[StreamEstimate] Stream completed successfully');
+          }
+          resolve();
+        } else {
+          reject(new Error(`Estimate stream failed (${xhr.status})`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Estimate stream request failed'));
+      xhr.ontimeout = () => reject(new Error('Estimate stream request timed out'));
+
+      if (params.signal) {
+        params.signal.addEventListener('abort', () => {
+          xhr.abort();
+          reject(new Error('Estimate stream aborted'));
+        });
+      }
+
+      xhr.send(
+        JSON.stringify({
+          content: params.content,
+          imageUrl: params.imageUrl,
+          imageBase64: params.imageBase64,
+          imageMimeType: params.imageMimeType,
+          senderId: params.senderId,
+        })
+      );
     });
   },
 

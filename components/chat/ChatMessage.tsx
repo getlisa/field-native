@@ -7,6 +7,7 @@ import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
+import { QuoteCard } from '@/components/chat/QuoteCard';
 import type { Message } from '@/components/chat/types';
 
 interface MessageAttachment {
@@ -334,6 +335,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             </Markdown>
           ) : null}
         </View>
+        {isAssistant && message.metadata?.quote ? (
+          <QuoteCard quote={message.metadata.quote} />
+        ) : null}
         <ThemedText
           style={[
             styles.timestamp,
