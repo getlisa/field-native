@@ -19,19 +19,38 @@ export interface Message {
   thoughtDurationSeconds?: number;
 }
 
-export type EstimateLineItemType = 'equipment' | 'part' | 'labor' | 'access' | 'other';
+export type EstimateLineItemKind =
+  | 'material'
+  | 'service'
+  | 'labor'
+  | 'rental'
+  | 'permit'
+  | 'other';
 
 export interface EstimateLineItem {
-  label: string;
-  type: EstimateLineItemType;
+  /** Pricebook sheet the row came from, e.g. "Sprinkler Materials" | "Labor Benchmarks". */
+  sourceSheet: string;
+  /** Pricebook code, e.g. "SP-010" | "LH-002". */
+  code: string;
+  description: string;
+  kind: EstimateLineItemKind;
   /** Quantity, or hours for labor line items. */
   quantity: number;
-  unitCost: number;
-  amount: number;
+  /** Unit, e.g. "EA" | "HR" | "DAY" | "CALL". */
+  unit: string;
+  unitPrice: number;
+  /** quantity * unitPrice. */
+  lineTotal: number;
 }
 
-/** Structured quote returned by the Estimate Cost demo endpoint (`quote` SSE event). */
+/**
+ * Structured quote returned by the Estimate Cost demo endpoint (`quote` SSE event).
+ * Shape matches the fire-protection pricebook quotation format.
+ */
 export interface EstimateQuote {
+  /** Always "estimate" for a quote you receive ("needs_info" never emits a quote frame). */
+  status: 'estimate' | 'needs_info';
+  title: string;
   identifiedEquipment: {
     brand: string;
     model: string;
@@ -42,13 +61,18 @@ export interface EstimateQuote {
     confidence: number;
   };
   lineItems: EstimateLineItem[];
-  laborHours: number;
-  laborRate: number;
-  subtotal: number;
+  /** Sum of non-labor lineTotals. */
+  materialsServicesSubtotal: number;
+  /** Sum of labor lineTotals. */
+  laborSubtotal: number;
+  /** 0 unless applicable. */
+  taxOther: number;
+  /** materials+services + labor + tax. */
   total: number;
   currency: string;
   assumptions: string[];
-  notes: string;
+  /** NFPA compliance flags / advisories. */
+  customerNotes: string[];
 }
 
 export interface MessageAttachment {
