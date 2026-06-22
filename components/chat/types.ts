@@ -18,12 +18,35 @@ export interface Message {
     quote?: EstimateQuote;
     /** Follow-up questions rendered as option buttons (responseKind === 'questions'). */
     questions?: FollowUpQuestion[];
+    /** Intermediate workflow events (node/identified) shown in the collapsible thinking dropdown. */
+    thinkingTrace?: ThinkingStep[];
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
   thoughtDurationSeconds?: number;
 }
 
 export type EstimateResponseKind = 'quote' | 'questions' | 'message';
+
+/** LangGraph node names emitted by the estimate workflow. */
+export type EstimateNodeName = 'identify' | 'build_quote' | 'ask_questions';
+
+/** Equipment recognized early by the `identify` node (subset of EstimateQuote.identifiedEquipment). */
+export interface IdentifiedEquipment {
+  brand?: string;
+  model?: string;
+  category?: string;
+  issue?: string;
+  decision?: 'repair' | 'replace';
+  confidence?: number;
+}
+
+/** One row in the assistant message's collapsible "thinking" trace. */
+export interface ThinkingStep {
+  id: string;
+  label: string;
+  detail?: string;
+  status: 'active' | 'done';
+}
 
 export interface FollowUpOption {
   id: string;

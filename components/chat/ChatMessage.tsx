@@ -9,6 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
 import { QuoteCard } from '@/components/chat/QuoteCard';
 import { QuestionsCard } from '@/components/chat/QuestionsCard';
+import { ThinkingTrace } from '@/components/chat/ThinkingTrace';
 import type { Message } from '@/components/chat/types';
 
 interface MessageAttachment {
@@ -267,7 +268,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
         />
       </View>
       <View style={[styles.messageContent, !isAssistant && styles.userMessageContent]}>
-        {isAssistant &&
+        {isAssistant && message.metadata?.thinkingTrace?.length ? (
+          <ThinkingTrace
+            steps={message.metadata.thinkingTrace}
+            active={isStreaming}
+            durationSeconds={message.thoughtDurationSeconds}
+          />
+        ) : (
+          isAssistant &&
           message.thoughtDurationSeconds != null &&
           !isChecklistUpdate &&
           !isProactiveSuggestion && (
@@ -277,7 +285,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                 Thought for {message.thoughtDurationSeconds}s
               </ThemedText>
             </View>
-          )}
+          )
+        )}
+        {(!!message.content || (isImageMessage && imageAttachments.length > 0)) && (
         <View
           style={[
             styles.bubble,
@@ -338,6 +348,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             </Markdown>
           ) : null}
         </View>
+        )}
         {isAssistant && message.metadata?.quote ? (
           <QuoteCard quote={message.metadata.quote} />
         ) : null}
