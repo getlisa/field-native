@@ -36,13 +36,25 @@ export interface AudioUploadResponse {
 }
 
 export interface StreamEvent {
-  type: 'user_message' | 'thinking' | 'chunk' | 'tool_call' | 'quote' | 'error' | 'done';
+  type:
+    | 'user_message'
+    | 'thinking'
+    | 'chunk'
+    | 'message'
+    | 'tool_call'
+    | 'quote'
+    | 'questions'
+    | 'error'
+    | 'done';
   content?: string;
   error?: string;
   tool?: any;
+  /** On the estimate `done` event: what the turn produced. */
+  responseKind?: 'quote' | 'questions' | 'message';
   /**
-   * `CopilotMessage` for user_message/done. The estimate `quote` event also arrives
-   * here as an `EstimateQuote`; the estimate handler casts it.
+   * `CopilotMessage` for user_message/done. The estimate `quote`/`questions` events also
+   * arrive here (an `EstimateQuote` / `{ questions: FollowUpQuestion[] }`); the estimate
+   * handler casts as needed.
    */
   data?: CopilotMessage;
 }

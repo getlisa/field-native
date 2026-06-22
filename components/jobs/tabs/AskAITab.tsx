@@ -48,7 +48,7 @@ import { copilotChatService, type CopilotMessage } from '@/services/copilotChatS
 import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import type { MediaAsset } from '@/lib/media';
-import type { EstimateQuote, Message, PendingImage } from '@/components/chat/types';
+import type { EstimateQuote, FollowUpQuestion, Message, PendingImage } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
@@ -320,12 +320,56 @@ export const AskAITab: React.FC = () => {
         }
 
         const aiMessageId = `ai-${Date.now()}`;
-        let streamedContent = '';
+        let assistantContent = '';
         let messageCreated = false;
         let quoteData: EstimateQuote | undefined;
+        let questionsData: FollowUpQuestion[] | undefined;
+        let responseKind: 'quote' | 'questions' | 'message' | undefined;
 
         thinkingStartedAtRef.current = Date.now();
         setIsThinking(true);
+
+        // Build metadata with only the keys we actually have (avoid clobbering on updates).
+        const buildMeta = (): NonNullable<Message['metadata']> => {
+          const meta: NonNullable<Message['metadata']> = { mode: 'estimate' };
+          if (responseKind) meta.responseKind = responseKind;
+          if (quoteData) meta.quote = quoteData;
+          if (questionsData) meta.questions = questionsData;
+          return meta;
+        };
+
+        // Create the assistant bubble on first content, or update it as quote/questions arrive.
+        const upsertAssistant = () => {
+          const creating = !messageCreated;
+          if (creating) {
+            messageCreated = true;
+            const start = thinkingStartedAtRef.current ?? Date.now();
+            const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+            setIsThinking(false);
+            streamingMessageIdRef.current = aiMessageId;
+            setStreamingMessageId(aiMessageId);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: aiMessageId,
+                role: 'assistant',
+                content: assistantContent,
+                timestamp: new Date(),
+                attachments: [],
+                thoughtDurationSeconds: thoughtSecs,
+                metadata: buildMeta(),
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? { ...msg, content: assistantContent, metadata: { ...msg.metadata, ...buildMeta() } }
+                  : msg
+              )
+            );
+          }
+        };
 
         await copilotChatService.streamEstimate({
           conversationId: convId,
@@ -341,56 +385,40 @@ export const AskAITab: React.FC = () => {
               );
             } else if (event.type === 'thinking') {
               setIsThinking(true);
+            } else if (event.type === 'message' && event.content) {
+              // New model: the full chat-bubble text arrives once (no token streaming).
+              assistantContent = event.content;
+              upsertAssistant();
+              addToQueue(event.content);
             } else if (event.type === 'chunk' && event.content) {
-              if (!messageCreated) {
-                messageCreated = true;
-                const start = thinkingStartedAtRef.current ?? Date.now();
-                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                setIsThinking(false);
-                streamingMessageIdRef.current = aiMessageId;
-                setStreamingMessageId(aiMessageId);
-                streamedContent = event.content;
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: aiMessageId,
-                    role: 'assistant',
-                    content: streamedContent,
-                    timestamp: new Date(),
-                    attachments: [],
-                    thoughtDurationSeconds: thoughtSecs,
-                    metadata: { mode: 'estimate', quote: quoteData },
-                  },
-                ]);
-                addToQueue(event.content);
-              } else {
-                streamedContent += event.content;
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
-                  )
-                );
-                addToQueue(event.content);
-              }
+              // Legacy fallback: append streamed tokens if an older backend still sends them.
+              assistantContent += event.content;
+              upsertAssistant();
+              addToQueue(event.content);
             } else if (event.type === 'quote' && event.data) {
               // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
               quoteData = event.data as unknown as EstimateQuote;
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === aiMessageId
-                    ? { ...msg, metadata: { ...msg.metadata, mode: 'estimate', quote: quoteData } }
-                    : msg
-                )
-              );
-            } else if (event.type === 'done' && event.data) {
+              upsertAssistant();
+            } else if (event.type === 'questions') {
+              const payload = event.data as unknown as { questions?: FollowUpQuestion[] } | FollowUpQuestion[] | undefined;
+              questionsData = Array.isArray(payload) ? payload : payload?.questions;
+              upsertAssistant();
+            } else if (event.type === 'done') {
               flush();
-              const finalAi = mapCopilotMessageToUi(event.data);
-              const finalMeta = {
-                ...(finalAi.metadata ?? {}),
-                mode: 'estimate' as const,
-                quote: quoteData ?? finalAi.metadata?.quote,
+              responseKind = event.responseKind ?? responseKind;
+              const finalAi = event.data ? mapCopilotMessageToUi(event.data) : undefined;
+              const serverMeta = (finalAi?.metadata ?? {}) as NonNullable<Message['metadata']>;
+              const finalMeta: NonNullable<Message['metadata']> = {
+                mode: 'estimate',
+                responseKind: responseKind ?? serverMeta.responseKind,
               };
-              if (!messageCreated) {
+              const quote = quoteData ?? serverMeta.quote;
+              const questions = questionsData ?? serverMeta.questions;
+              if (quote) finalMeta.quote = quote;
+              if (questions) finalMeta.questions = questions;
+
+              const creating = !messageCreated;
+              if (creating) {
                 messageCreated = true;
                 const start = thinkingStartedAtRef.current ?? Date.now();
                 const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
@@ -400,8 +428,11 @@ export const AskAITab: React.FC = () => {
                 setMessages((prev) => [
                   ...prev,
                   {
-                    ...finalAi,
-                    id: finalAi.id || aiMessageId,
+                    id: finalAi?.id || aiMessageId,
+                    role: 'assistant',
+                    content: finalAi?.content ?? assistantContent,
+                    timestamp: finalAi?.timestamp ?? new Date(),
+                    attachments: finalAi?.attachments ?? [],
                     thoughtDurationSeconds: thoughtSecs,
                     metadata: finalMeta,
                   },
@@ -411,9 +442,9 @@ export const AskAITab: React.FC = () => {
                   prev.map((msg) =>
                     msg.id === aiMessageId
                       ? {
-                          ...finalAi,
-                          id: finalAi.id || aiMessageId,
-                          thoughtDurationSeconds: msg.thoughtDurationSeconds,
+                          ...msg,
+                          id: finalAi?.id || aiMessageId,
+                          content: finalAi?.content ?? msg.content,
                           metadata: finalMeta,
                         }
                       : msg
@@ -440,6 +471,15 @@ export const AskAITab: React.FC = () => {
       }
     },
     [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
+  );
+
+  // Estimate Cost follow-up: tapping an option (or submitting "Other") re-sends the
+  // chosen value to the estimate endpoint in the same conversation.
+  const handleAnswerQuestion = useCallback(
+    (value: string) => {
+      void handleSendEstimate(value);
+    },
+    [handleSendEstimate]
   );
 
   /**
@@ -1063,9 +1103,10 @@ export const AskAITab: React.FC = () => {
       <ChatMessage
         message={item}
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
+        onAnswerQuestion={handleAnswerQuestion}
       />
     ),
-    [streamingMessageId]
+    [streamingMessageId, handleAnswerQuestion]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);

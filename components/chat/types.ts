@@ -12,11 +12,34 @@ export interface Message {
     itemId?: string;
     /** Set on AI messages produced by the Estimate Cost demo mode. */
     mode?: 'estimate';
-    /** Structured cost estimate rendered as a quote card. */
+    /** What the estimate turn produced — drives whether the card/buttons render. */
+    responseKind?: EstimateResponseKind;
+    /** Structured cost estimate rendered as a quote card (responseKind === 'quote'). */
     quote?: EstimateQuote;
+    /** Follow-up questions rendered as option buttons (responseKind === 'questions'). */
+    questions?: FollowUpQuestion[];
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
   thoughtDurationSeconds?: number;
+}
+
+export type EstimateResponseKind = 'quote' | 'questions' | 'message';
+
+export interface FollowUpOption {
+  id: string;
+  /** Button text, e.g. "Drop tile ceiling". */
+  label: string;
+  /** The answer text sent back to the estimate endpoint when tapped. */
+  value: string;
+}
+
+/** A required follow-up question the copilot asks when a request is too vague to price. */
+export interface FollowUpQuestion {
+  id: string;
+  question: string;
+  options: FollowUpOption[];
+  /** Always true → also offer an "Other" (type/speak) free-text entry. */
+  allowOther: boolean;
 }
 
 export type EstimateLineItemKind =
