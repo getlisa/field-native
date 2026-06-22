@@ -21,7 +21,6 @@ platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 prepare_react_native_project!
 
 target 'ClaraWearables' do
-  project 'ClaraWearables.xcodeproj'
   use_expo_modules!
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
@@ -58,36 +57,37 @@ target 'ClaraWearables' do
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
 
-    # Embed MWDATCore & MWDATCamera dynamic frameworks into the app bundle.
-    # CocoaPods doesn't embed vendored dynamic xcframeworks from static pods,
-    # so we add a custom build phase to copy and codesign them.
-    app_project = installer.aggregate_targets
-      .find { |t| t.label == 'Pods-ClaraWearables' }
-      &.user_project
-    if app_project
-      app_target = app_project.targets.find { |t| t.name == 'ClaraWearables' }
+    # --- ClaraWearables: signing team + Meta Wearables (MWDAT) framework embedding ---
+    # `pod install` / `expo prebuild` regenerate the app project, dropping the dev team
+    # and never embedding the vendored *dynamic* MWDAT xcframeworks — causing both the
+    # "requires a development team" error and a dyld "Library not loaded:
+    # @rpath/MWDATCamera.framework" crash at launch. Re-apply both on every install.
+    require 'xcodeproj'
+    app_project_path = File.join(__dir__, 'ClaraWearables.xcodeproj')
+    if File.exist?(app_project_path)
+      app_project = Xcodeproj::Project.open(app_project_path)
+      app_target = app_project.native_targets.find { |t| t.name == 'ClaraWearables' }
       if app_target
-        phase_name = 'Embed MWDAT Frameworks'
-        unless app_target.shell_script_build_phases.any? { |p| p.name == phase_name }
-          phase = app_target.new_shell_script_build_phase(phase_name)
-          phase.shell_script = <<~SCRIPT
-            MWDAT_DIR="${PODS_ROOT}/../../modules/expo-wearables-camera/ios/Frameworks"
-            if [ "${PLATFORM_NAME}" == "iphonesimulator" ]; then
-              SLICE="ios-arm64_x86_64-simulator"
-            else
-              SLICE="ios-arm64"
-            fi
-            DEST="${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-            mkdir -p "${DEST}"
-            rsync -av --delete "${MWDAT_DIR}/MWDATCore.xcframework/${SLICE}/MWDATCore.framework" "${DEST}/"
-            rsync -av --delete "${MWDAT_DIR}/MWDATCamera.xcframework/${SLICE}/MWDATCamera.framework" "${DEST}/"
-            if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" -a "${CODE_SIGNING_REQUIRED:-}" != "NO" -a "${CODE_SIGNING_ALLOWED}" != "NO" ]; then
-              /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "${DEST}/MWDATCore.framework"
-              /usr/bin/codesign --force --sign ${EXPANDED_CODE_SIGN_IDENTITY} ${OTHER_CODE_SIGN_FLAGS:-} --preserve-metadata=identifier,entitlements "${DEST}/MWDATCamera.framework"
-            fi
-          SCRIPT
-          app_project.save
+        # 1) Keep automatic signing with the ZenTrades team on every configuration.
+        app_target.build_configurations.each do |cfg|
+          cfg.build_settings['DEVELOPMENT_TEAM'] = 'TS3BFX5G72'
+          cfg.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
         end
+
+        # 2) Embed + sign the MWDAT dynamic frameworks (CocoaPods skips these).
+        embed_phase = app_target.copy_files_build_phases.find { |p| p.name == 'Embed MWDAT Frameworks' }
+        unless embed_phase
+          embed_phase = app_target.new_copy_files_build_phase('Embed MWDAT Frameworks')
+          embed_phase.symbol_dst_subfolder_spec = :frameworks
+        end
+        ['MWDATCore', 'MWDATCamera'].each do |name|
+          next if embed_phase.files.any? { |bf| bf.file_ref && bf.file_ref.display_name == "#{name}.xcframework" }
+          ref = app_project.frameworks_group.new_file("../modules/expo-wearables-camera/ios/Frameworks/#{name}.xcframework")
+          build_file = embed_phase.add_file_reference(ref, true)
+          build_file.settings = { 'ATTRIBUTES' => ['CodeSignOnCopy', 'RemoveHeadersOnCopy'] }
+        end
+
+        app_project.save
       end
     end
   end

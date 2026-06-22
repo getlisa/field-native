@@ -15,7 +15,11 @@ Pod::Spec.new do |s|
   }
   s.swift_version  = '5.4'
   s.source         = { git: 'https://github.com/ashrafshaik543/expo-wearables-camera' }
-  s.static_framework = true
+  # NOTE: do NOT set `static_framework = true`. The app uses static linkage
+  # (use_frameworks! is off), and that flag makes CocoaPods skip embedding the
+  # vendored *dynamic* MWDAT xcframeworks into the app bundle — causing a dyld
+  # "Library not loaded: @rpath/MWDATCamera.framework" crash at launch. Leaving it
+  # off lets the [CP] Embed Pods Frameworks phase embed + sign them.
 
   s.dependency 'ExpoModulesCore'
 
