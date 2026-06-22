@@ -20,12 +20,24 @@ export interface Message {
     questions?: FollowUpQuestion[];
     /** Intermediate workflow events (node/identified) shown in the collapsible thinking dropdown. */
     thinkingTrace?: ThinkingStep[];
+    /** Downloadable quotation PDF (quote turns only) — presigned URL + metadata. */
+    quotePdf?: EstimatePdf;
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
   thoughtDurationSeconds?: number;
 }
 
 export type EstimateResponseKind = 'quote' | 'questions' | 'message';
+
+/** The generated quotation PDF emitted by the `quote_pdf` SSE event (quote turns only). */
+export interface EstimatePdf {
+  /** Presigned, downloadable S3 URL (Content-Disposition: attachment). Expires ~24h. */
+  url: string;
+  /** S3 object key (also mirrored at EstimateQuote.pdfKey). */
+  key?: string;
+  /** Suggested filename, e.g. "Estimate-E0ABC12.pdf". */
+  filename?: string;
+}
 
 /** LangGraph node names emitted by the estimate workflow. */
 export type EstimateNodeName = 'identify' | 'build_quote' | 'ask_questions';
@@ -119,6 +131,10 @@ export interface EstimateQuote {
   assumptions: string[];
   /** NFPA compliance flags / advisories. */
   customerNotes: string[];
+  /** S3 key of the generated quotation PDF (persisted on `done`). */
+  pdfKey?: string;
+  /** Human-facing estimate number, e.g. "E0ABC12". */
+  estimateNumber?: string;
 }
 
 export interface MessageAttachment {

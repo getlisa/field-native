@@ -27,10 +27,13 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   /** Estimate Cost follow-up answer: sends the chosen option value back to the endpoint. */
   onAnswerQuestion?: (value: string) => void;
+  /** Estimate Cost: download/open the generated quotation PDF for this message. */
+  onDownloadPdf?: (message: Message) => void | Promise<void>;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf }) => {
   const { colors } = useTheme();
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
@@ -350,7 +353,22 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
         </View>
         )}
         {isAssistant && message.metadata?.quote ? (
-          <QuoteCard quote={message.metadata.quote} />
+          <QuoteCard
+            quote={message.metadata.quote}
+            downloadingPdf={downloadingPdf}
+            onDownloadPdf={
+              onDownloadPdf && (message.metadata?.quotePdf?.url || message.metadata?.quote?.pdfKey)
+                ? async () => {
+                    setDownloadingPdf(true);
+                    try {
+                      await onDownloadPdf(message);
+                    } finally {
+                      setDownloadingPdf(false);
+                    }
+                  }
+                : undefined
+            }
+          />
         ) : null}
         {isAssistant && message.metadata?.questions?.length ? (
           <QuestionsCard questions={message.metadata.questions} onAnswer={onAnswerQuestion} />
