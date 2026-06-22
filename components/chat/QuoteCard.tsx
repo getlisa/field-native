@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
 import { Badge, type BadgeVariant } from '@/components/ui/Badge';
 import { ThemedText } from '@/components/themed-text';
@@ -9,6 +9,10 @@ import type { EstimateLineItemKind, EstimateQuote } from '@/components/chat/type
 
 interface QuoteCardProps {
   quote: EstimateQuote;
+  /** When provided, render a "Download PDF" footer button that invokes this on press. */
+  onDownloadPdf?: () => void;
+  /** Show a spinner on the download button while the PDF link resolves / opens. */
+  downloadingPdf?: boolean;
 }
 
 const KIND_VARIANT: Record<EstimateLineItemKind, BadgeVariant> = {
@@ -49,7 +53,7 @@ const firstFinite = (...values: unknown[]): number | undefined => {
  * (pricebook code + kind), the materials/labor/tax subtotals and total, plus
  * collapsible assumptions and customer (NFPA) notes.
  */
-export const QuoteCard: React.FC<QuoteCardProps> = ({ quote }) => {
+export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false }) => {
   const { colors } = useTheme();
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
 
@@ -256,6 +260,27 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote }) => {
             ))}
         </>
       ) : null}
+
+      {/* Download PDF */}
+      {onDownloadPdf ? (
+        <Pressable
+          style={[styles.downloadButton, { backgroundColor: colors.primary }]}
+          onPress={onDownloadPdf}
+          disabled={downloadingPdf}
+          accessibilityRole="button"
+          accessibilityLabel="Download quotation PDF"
+          accessibilityState={{ disabled: downloadingPdf }}
+        >
+          {downloadingPdf ? (
+            <ActivityIndicator size="small" color="#ffffff" />
+          ) : (
+            <Ionicons name="document-text-outline" size={16} color="#ffffff" />
+          )}
+          <ThemedText style={styles.downloadLabel}>
+            {downloadingPdf ? 'Opening…' : 'Download PDF'}
+          </ThemedText>
+        </Pressable>
+      ) : null}
     </View>
   );
 };
@@ -412,6 +437,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontStyle: 'italic',
     paddingVertical: 6,
+  },
+  downloadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  downloadLabel: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

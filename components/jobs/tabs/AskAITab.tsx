@@ -24,6 +24,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
+import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -50,6 +51,7 @@ import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
 import type {
+  EstimatePdf,
   EstimateQuote,
   FollowUpQuestion,
   IdentifiedEquipment,
@@ -341,6 +343,7 @@ export const AskAITab: React.FC = () => {
         let messageCreated = false;
         let quoteData: EstimateQuote | undefined;
         let questionsData: FollowUpQuestion[] | undefined;
+        let pdfData: EstimatePdf | undefined;
         let responseKind: 'quote' | 'questions' | 'message' | undefined;
         // Intermediate workflow events (node/identified) shown in the thinking dropdown.
         const trace: ThinkingStep[] = [];
@@ -366,6 +369,7 @@ export const AskAITab: React.FC = () => {
           if (responseKind) meta.responseKind = responseKind;
           if (quoteData) meta.quote = quoteData;
           if (questionsData) meta.questions = questionsData;
+          if (pdfData) meta.quotePdf = pdfData;
           if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
           return meta;
         };
@@ -465,6 +469,10 @@ export const AskAITab: React.FC = () => {
               // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
               quoteData = event.data as unknown as EstimateQuote;
               upsertAssistant();
+            } else if (event.type === 'quote_pdf' && event.url) {
+              // Generated quotation PDF — presigned, downloadable URL + metadata.
+              pdfData = { url: event.url, key: event.key, filename: event.filename };
+              upsertAssistant();
             } else if (event.type === 'questions') {
               questionsData = extractQuestions(event);
               upsertAssistant();
@@ -479,8 +487,10 @@ export const AskAITab: React.FC = () => {
               };
               const quote = quoteData ?? serverMeta.quote;
               const questions = questionsData ?? serverMeta.questions;
+              const pdf = pdfData ?? serverMeta.quotePdf;
               if (quote) finalMeta.quote = quote;
               if (questions) finalMeta.questions = questions;
+              if (pdf) finalMeta.quotePdf = pdf;
               trace.forEach((s) => {
                 if (s.status === 'active') s.status = 'done';
               });
@@ -552,6 +562,42 @@ export const AskAITab: React.FC = () => {
     [handleSendEstimate]
   );
 
+  // Estimate Cost: download the generated quotation PDF. Resolves a fresh presigned URL via the
+  // durable re-download endpoint (links expire ~24h), falling back to the URL captured during the
+  // turn, then opens it in an in-app browser.
+  const handleDownloadPdf = useCallback(
+    async (message: Message) => {
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        let url: string | null = null;
+        if (convId && message.id) {
+          url = await copilotChatService.getEstimatePdfUrl({
+            conversationId: convId,
+            messageId: message.id,
+          });
+        }
+        url = url ?? message.metadata?.quotePdf?.url ?? null;
+        if (!url) {
+          console.warn('[AskAI] No PDF URL available for message', message.id);
+          return;
+        }
+        await WebBrowser.openBrowserAsync(url);
+      } catch (err) {
+        console.warn('[AskAI] Failed to open quotation PDF', err);
+      }
+    },
+    [conversationId, ensureConversation]
+  );
+
+  /**
+   * Main message handler - supports text, voice, and images
+   *
+   * Flow:
+   * 1. Images: Upload → Create user message → Stream AI response
+   * 2. Text/Voice: Create optimistic message → Stream AI response
+   *
+   * Streaming uses XMLHttpRequest for React Native compatibility
+   */
   const handleSendMessage = useCallback(
     async (content: string, _type: 'text' | 'voice' | 'image') => {
       // Estimate Cost mode routes to the dedicated estimate endpoint.
@@ -1174,9 +1220,10 @@ export const AskAITab: React.FC = () => {
         message={item}
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
         onAnswerQuestion={handleAnswerQuestion}
+        onDownloadPdf={handleDownloadPdf}
       />
     ),
-    [streamingMessageId, handleAnswerQuestion]
+    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);

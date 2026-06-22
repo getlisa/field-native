@@ -45,6 +45,7 @@ export interface StreamEvent {
     | 'node'
     | 'identified'
     | 'quote'
+    | 'quote_pdf'
     | 'questions'
     | 'error'
     | 'done';
@@ -54,6 +55,10 @@ export interface StreamEvent {
   /** Estimate workflow `node` event: graph step name + lifecycle phase. */
   node?: string;
   phase?: 'start' | 'end';
+  /** Estimate `quote_pdf` event: presigned downloadable PDF URL + metadata. */
+  url?: string;
+  key?: string;
+  filename?: string;
   /** On the estimate `done` event: what the turn produced. */
   responseKind?: 'quote' | 'questions' | 'message';
   /**
@@ -546,6 +551,47 @@ export const copilotChatService = {
         })
       );
     });
+  },
+
+  /**
+   * Resolve a fresh, downloadable URL for a quote's PDF. Presigned `quote_pdf` URLs expire
+   * (~24h), so this hits the durable re-download endpoint which always re-presigns:
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf → 302 to a fresh presigned URL.
+   * Returns null on 404 (message has no PDF, e.g. a questions turn) or any error, so callers
+   * can fall back to a stored URL.
+   */
+  async getEstimatePdfUrl(params: {
+    conversationId: string;
+    messageId: string;
+  }): Promise<string | null> {
+    const endpoint = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/pdf`;
+    try {
+      // Prefer reading the redirect target directly (no PDF bytes transferred).
+      const manual = await fetch(endpoint, {
+        method: 'GET',
+        headers: buildHeaders(false),
+        redirect: 'manual',
+      });
+      const location = manual.headers.get('location') || manual.headers.get('Location');
+      if (location) return location;
+      // RN often can't expose the Location header on a manual redirect; follow it and use the
+      // final resolved URL instead (the presigned S3 link). Body is ignored.
+      if (manual.status === 404) return null;
+
+      const followed = await fetch(endpoint, {
+        method: 'GET',
+        headers: buildHeaders(false),
+        redirect: 'follow',
+      });
+      if (followed.status === 404) return null;
+      if (followed.url && followed.url !== endpoint) return followed.url;
+      return null;
+    } catch (err) {
+      if (__DEV__) {
+        console.warn('[getEstimatePdfUrl] Failed to resolve PDF URL:', err);
+      }
+      return null;
+    }
   },
 
   normalizeEvent(rawEvt: any): StreamEvent {
