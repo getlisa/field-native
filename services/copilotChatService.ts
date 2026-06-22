@@ -42,6 +42,8 @@ export interface StreamEvent {
     | 'chunk'
     | 'message'
     | 'tool_call'
+    | 'node'
+    | 'identified'
     | 'quote'
     | 'questions'
     | 'error'
@@ -49,6 +51,9 @@ export interface StreamEvent {
   content?: string;
   error?: string;
   tool?: any;
+  /** Estimate workflow `node` event: graph step name + lifecycle phase. */
+  node?: string;
+  phase?: 'start' | 'end';
   /** On the estimate `done` event: what the turn produced. */
   responseKind?: 'quote' | 'questions' | 'message';
   /**

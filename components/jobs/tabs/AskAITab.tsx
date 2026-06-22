@@ -49,7 +49,14 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
-import type { EstimateQuote, FollowUpQuestion, Message, PendingImage } from '@/components/chat/types';
+import type {
+  EstimateQuote,
+  FollowUpQuestion,
+  IdentifiedEquipment,
+  Message,
+  PendingImage,
+  ThinkingStep,
+} from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
@@ -335,9 +342,23 @@ export const AskAITab: React.FC = () => {
         let quoteData: EstimateQuote | undefined;
         let questionsData: FollowUpQuestion[] | undefined;
         let responseKind: 'quote' | 'questions' | 'message' | undefined;
+        // Intermediate workflow events (node/identified) shown in the thinking dropdown.
+        const trace: ThinkingStep[] = [];
 
         thinkingStartedAtRef.current = Date.now();
         setIsThinking(true);
+
+        // Add or update a trace step (keyed by id).
+        const upsertStep = (id: string, label: string, patch: Partial<ThinkingStep> = {}) => {
+          const existing = trace.find((s) => s.id === id);
+          if (existing) {
+            existing.label = label;
+            if (patch.detail !== undefined) existing.detail = patch.detail;
+            if (patch.status) existing.status = patch.status;
+          } else {
+            trace.push({ id, label, status: 'active', ...patch });
+          }
+        };
 
         // Build metadata with only the keys we actually have (avoid clobbering on updates).
         const buildMeta = (): NonNullable<Message['metadata']> => {
@@ -345,7 +366,18 @@ export const AskAITab: React.FC = () => {
           if (responseKind) meta.responseKind = responseKind;
           if (quoteData) meta.quote = quoteData;
           if (questionsData) meta.questions = questionsData;
+          if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
           return meta;
+        };
+
+        // Tolerant extraction of the follow-up questions array across payload shapes.
+        const extractQuestions = (ev: any): FollowUpQuestion[] | undefined => {
+          const d = ev?.data;
+          if (Array.isArray(d)) return d;
+          if (Array.isArray(d?.questions)) return d.questions;
+          if (Array.isArray(ev?.questions)) return ev.questions;
+          if (Array.isArray(d?.data?.questions)) return d.data.questions;
+          return undefined;
         };
 
         // Create the assistant bubble on first content, or update it as quote/questions arrive.
@@ -388,6 +420,10 @@ export const AskAITab: React.FC = () => {
           imageMimeType,
           senderId: user?.id ? String(user.id) : undefined,
           onEvent: (event) => {
+            if (__DEV__) {
+              // Diagnostic: capture the real estimate event shapes (remove once confirmed).
+              console.log('[Estimate evt]', event.type, JSON.stringify(event.data ?? event.content ?? event));
+            }
             if (event.type === 'user_message' && event.data) {
               const confirmedUserMsg = mapCopilotMessageToUi(event.data);
               setMessages((prev) =>
@@ -395,6 +431,26 @@ export const AskAITab: React.FC = () => {
               );
             } else if (event.type === 'thinking') {
               setIsThinking(true);
+            } else if (event.type === 'node' && event.node) {
+              const labels: Record<string, string> = {
+                identify: 'Identifying equipment',
+                build_quote: 'Building quote',
+                ask_questions: 'Preparing follow-up questions',
+              };
+              upsertStep(event.node, labels[event.node] ?? event.node, {
+                status: event.phase === 'end' ? 'done' : 'active',
+              });
+              upsertAssistant();
+            } else if (event.type === 'identified') {
+              const eq = event.data as unknown as IdentifiedEquipment | null;
+              const detail =
+                eq && (eq.brand || eq.model)
+                  ? `${[eq.brand, eq.model].filter(Boolean).join(' ')}${
+                      eq.confidence != null ? ` · ${Math.round(eq.confidence * 100)}%` : ''
+                    }`
+                  : 'No confident match';
+              upsertStep('identify', 'Identifying equipment', { detail });
+              upsertAssistant();
             } else if (event.type === 'message' && event.content) {
               // New model: the full chat-bubble text arrives once (no token streaming).
               assistantContent = event.content;
@@ -410,8 +466,7 @@ export const AskAITab: React.FC = () => {
               quoteData = event.data as unknown as EstimateQuote;
               upsertAssistant();
             } else if (event.type === 'questions') {
-              const payload = event.data as unknown as { questions?: FollowUpQuestion[] } | FollowUpQuestion[] | undefined;
-              questionsData = Array.isArray(payload) ? payload : payload?.questions;
+              questionsData = extractQuestions(event);
               upsertAssistant();
             } else if (event.type === 'done') {
               flush();
@@ -426,6 +481,11 @@ export const AskAITab: React.FC = () => {
               const questions = questionsData ?? serverMeta.questions;
               if (quote) finalMeta.quote = quote;
               if (questions) finalMeta.questions = questions;
+              trace.forEach((s) => {
+                if (s.status === 'active') s.status = 'done';
+              });
+              const finalTrace = trace.length ? trace.map((s) => ({ ...s })) : serverMeta.thinkingTrace;
+              if (finalTrace?.length) finalMeta.thinkingTrace = finalTrace;
 
               const creating = !messageCreated;
               if (creating) {
