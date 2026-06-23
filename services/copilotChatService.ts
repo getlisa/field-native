@@ -588,32 +588,29 @@ export const copilotChatService = {
     messageId: string;
   }): Promise<string | null> {
     const endpoint = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/pdf`;
+    // Follow the redirect and read the final URL. `redirect: 'manual'` is unreliable in RN
+    // (can hang), so we follow and use Response.url (set to the resolved presigned S3 link on
+    // iOS). Guard with an AbortController timeout so this can never hang the caller.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      // Prefer reading the redirect target directly (no PDF bytes transferred).
-      const manual = await fetch(endpoint, {
-        method: 'GET',
-        headers: buildHeaders(false),
-        redirect: 'manual',
-      });
-      const location = manual.headers.get('location') || manual.headers.get('Location');
-      if (location) return location;
-      // 404 = no such message; 409 = not signed yet → nothing to download.
-      if (manual.status === 404 || manual.status === 409) return null;
-      // RN often can't expose the Location header on a manual redirect; follow it and use the
-      // final resolved URL instead (the presigned S3 link). Body is ignored.
-      const followed = await fetch(endpoint, {
+      const res = await fetch(endpoint, {
         method: 'GET',
         headers: buildHeaders(false),
         redirect: 'follow',
+        signal: controller.signal,
       });
-      if (followed.status === 404 || followed.status === 409) return null;
-      if (followed.url && followed.url !== endpoint) return followed.url;
+      // 404 = no such message; 409 = not signed yet → nothing to download.
+      if (res.status === 404 || res.status === 409) return null;
+      if (res.ok && res.url && res.url !== endpoint) return res.url;
       return null;
     } catch (err) {
       if (__DEV__) {
         console.warn('[getEstimatePdfUrl] Failed to resolve PDF URL:', err);
       }
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   },
 

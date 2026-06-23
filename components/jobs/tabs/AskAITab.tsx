@@ -566,15 +566,20 @@ export const AskAITab: React.FC = () => {
   const handleDownloadPdf = useCallback(
     async (message: Message) => {
       try {
-        const convId = conversationId ?? (await ensureConversation());
-        let url: string | null = null;
-        if (convId && message.id) {
-          url = await copilotChatService.getEstimatePdfUrl({
-            conversationId: convId,
-            messageId: message.id,
-          });
+        // Prefer the fresh presigned URL captured at sign time (common case — opens instantly).
+        let url: string | null = message.metadata?.quotePdf?.url ?? null;
+        // Only hit the durable re-download endpoint when there's no stored URL
+        // (rehydrated conversation / expired link). Timeout-guarded so it can't hang.
+        if (!url) {
+          const convId = conversationId ?? (await ensureConversation());
+          if (convId && message.id) {
+            url = await copilotChatService.getEstimatePdfUrl({
+              conversationId: convId,
+              messageId: message.id,
+            });
+          }
         }
-        url = url ?? message.metadata?.quotePdf?.url ?? null;
+        if (__DEV__) console.log('[AskAI] Download PDF url:', url);
         if (!url) {
           console.warn('[AskAI] No PDF URL available for message', message.id);
           return;
