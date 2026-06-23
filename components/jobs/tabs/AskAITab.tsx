@@ -62,7 +62,7 @@ import type {
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
-  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
+  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription, setSwipeEnabled } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -88,6 +88,12 @@ export const AskAITab: React.FC = () => {
   // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
   const [signingMessage, setSigningMessage] = useState<Message | null>(null);
   const [isSigning, setIsSigning] = useState(false);
+
+  // Suspend tab-swipe while the signature pad is open so drawing strokes don't switch tabs.
+  useEffect(() => {
+    setSwipeEnabled?.(!signingMessage);
+    return () => setSwipeEnabled?.(true);
+  }, [signingMessage, setSwipeEnabled]);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);

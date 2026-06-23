@@ -152,11 +152,15 @@ export default function JobDetailPage() {
   // Ordered tabs for swipe navigation
   const tabOrder: TabKey[] = ['transcription', 'askAI', 'checklist', 'insights'];
 
+  // Allow children (e.g. the AskAI signature pad) to suspend tab-swipe while a drawing gesture is active.
+  const [swipeEnabled, setSwipeEnabled] = useState(true);
+
   // Use reusable swipe navigation hook
   const { panResponder, panX, slideAnim, fadeAnim, changeTab } = useSwipeNavigation({
     tabs: tabOrder,
     activeTab,
     onTabChange: setActiveTab,
+    enabled: swipeEnabled,
   });
 
   const { job, visitSession, loading, error, fetchJob, startJob, completeJob } = useJobDetails();
@@ -1187,6 +1191,7 @@ export default function JobDetailPage() {
       transcriptionScrollRef, // Add scroll ref for auto-scroll
       isLoadingDbTurns, // Add loading state for DB turns
       setActiveTab, // Add setActiveTab for navigation
+      setSwipeEnabled, // Let children suspend tab-swipe (e.g. signature pad)
       // Audio controls for live audio playback (viewers only)
       isReceivingAudio: !isAssignedToJob ? isReceivingAudio : undefined,
       isAudioEnabled: !isAssignedToJob ? isAudioEnabled : undefined,
@@ -1208,6 +1213,7 @@ export default function JobDetailPage() {
       visitSession?.id,
       isLoadingDbTurns,
       setActiveTab,
+      setSwipeEnabled,
       isReceivingAudio,
       isAudioEnabled,
       toggleAudio,
