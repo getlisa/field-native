@@ -23,6 +23,8 @@ interface SignaturePadProps {
   onSubmit: (signatureBase64: string, signerName: string) => void;
   /** Disable controls + show a spinner while the signed PDF is being generated. */
   submitting?: boolean;
+  /** Called (iOS) after the modal has fully dismissed — safe point to present another view. */
+  onDismiss?: () => void;
 }
 
 /**
@@ -31,7 +33,7 @@ interface SignaturePadProps {
  * PNG data URL and hands it back via onSubmit. Undo/Erase/Cancel manage the drawing.
  * Built on react-native-signature-canvas (WebView + signature_pad.js).
  */
-export const SignaturePad: React.FC<SignaturePadProps> = ({ visible, onCancel, onSubmit, submitting = false }) => {
+export const SignaturePad: React.FC<SignaturePadProps> = ({ visible, onCancel, onSubmit, submitting = false, onDismiss }) => {
   const { colors } = useTheme();
   const ref = useRef<SignatureViewRef>(null);
   const [name, setName] = useState('');
@@ -79,7 +81,7 @@ export const SignaturePad: React.FC<SignaturePadProps> = ({ visible, onCancel, o
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleCancel}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleCancel} onDismiss={onDismiss}>
       <KeyboardAvoidingView
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
