@@ -24,12 +24,14 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
-import * as WebBrowser from 'expo-web-browser';
+import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   Keyboard,
+  Linking,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
@@ -98,9 +100,11 @@ export const AskAITab: React.FC = () => {
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
-  // Signed-PDF URL to open once the signature modal has fully dismissed (avoids an iOS
+  // Signed PDF to open once the signature modal has fully dismissed (avoids an iOS
   // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
-  const pendingPdfUrlRef = useRef<string | null>(null);
+  const pendingPdfRef = useRef<{ url: string; filename?: string } | null>(null);
+  // Re-entrancy guard so rapid Download taps don't stack downloads/preview sheets.
+  const isOpeningPdfRef = useRef(false);
 
   // TTS hook for voice agent
   const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
@@ -570,36 +574,54 @@ export const AskAITab: React.FC = () => {
     [handleSendEstimate]
   );
 
-  // Estimate Cost: download the generated quotation PDF. Resolves a fresh presigned URL via the
-  // durable re-download endpoint (links expire ~24h), falling back to the URL captured during the
-  // turn, then opens it in an in-app browser.
+  // Download the PDF to a local file and present it in the iOS preview/share sheet. The signed
+  // PDF's presigned S3 URL is served with Content-Disposition: attachment, which an in-app
+  // browser (SFSafariViewController) can't display — so we download + Sharing.shareAsync instead.
+  const openPdfInApp = useCallback(async (url: string, filename?: string) => {
+    if (isOpeningPdfRef.current) return;
+    isOpeningPdfRef.current = true;
+    try {
+      const safeName = (filename || 'Estimate.pdf').replace(/[^\w.\-]+/g, '_');
+      const localUri = `${cacheDirectory ?? ''}${safeName}`;
+      const { uri } = await downloadAsync(url, localUri);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: 'Quotation PDF',
+        });
+      } else {
+        await Linking.openURL(url);
+      }
+    } catch (err) {
+      console.warn('[AskAI] Failed to open quotation PDF', err);
+    } finally {
+      isOpeningPdfRef.current = false;
+    }
+  }, []);
+
+  // Estimate Cost: open the generated quotation PDF. Prefers the fresh presigned URL captured at
+  // sign time; falls back to the durable re-download endpoint for rehydrated/expired quotes.
   const handleDownloadPdf = useCallback(
     async (message: Message) => {
-      try {
-        // Prefer the fresh presigned URL captured at sign time (common case — opens instantly).
-        let url: string | null = message.metadata?.quotePdf?.url ?? null;
-        // Only hit the durable re-download endpoint when there's no stored URL
-        // (rehydrated conversation / expired link). Timeout-guarded so it can't hang.
-        if (!url) {
-          const convId = conversationId ?? (await ensureConversation());
-          if (convId && message.id) {
-            url = await copilotChatService.getEstimatePdfUrl({
-              conversationId: convId,
-              messageId: message.id,
-            });
-          }
+      let url: string | null = message.metadata?.quotePdf?.url ?? null;
+      if (!url) {
+        const convId = conversationId ?? (await ensureConversation());
+        if (convId && message.id) {
+          url = await copilotChatService.getEstimatePdfUrl({
+            conversationId: convId,
+            messageId: message.id,
+          });
         }
-        if (__DEV__) console.log('[AskAI] Download PDF url:', url);
-        if (!url) {
-          console.warn('[AskAI] No PDF URL available for message', message.id);
-          return;
-        }
-        await WebBrowser.openBrowserAsync(url);
-      } catch (err) {
-        console.warn('[AskAI] Failed to open quotation PDF', err);
       }
+      if (__DEV__) console.log('[AskAI] Download PDF url:', url);
+      if (!url) {
+        console.warn('[AskAI] No PDF URL available for message', message.id);
+        return;
+      }
+      await openPdfInApp(url, message.metadata?.quotePdf?.filename);
     },
-    [conversationId, ensureConversation]
+    [conversationId, ensureConversation, openPdfInApp]
   );
 
   // Estimate Cost: open the signature pad for a quote message.
@@ -610,13 +632,11 @@ export const AskAITab: React.FC = () => {
   // Open the signed PDF queued during signing. Captures-and-clears the ref so whichever of
   // onDismiss / the timeout safety-net fires first wins and the other is a no-op.
   const openPendingPdf = useCallback(() => {
-    const url = pendingPdfUrlRef.current;
-    if (!url) return;
-    pendingPdfUrlRef.current = null;
-    WebBrowser.openBrowserAsync(url).catch((err) =>
-      console.warn('[AskAI] Failed to open signed PDF', err)
-    );
-  }, []);
+    const pending = pendingPdfRef.current;
+    if (!pending) return;
+    pendingPdfRef.current = null;
+    void openPdfInApp(pending.url, pending.filename);
+  }, [openPdfInApp]);
 
   // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
   // on the message (so the card flips to "Download PDF"), then open the PDF.
@@ -670,7 +690,7 @@ export const AskAITab: React.FC = () => {
         // Queue the PDF and close the pad. Opening the in-app browser is deferred until the
         // modal has fully dismissed (via onDismiss / the timeout) to avoid an iOS freeze from
         // presenting a view controller while the modal is still dismissing.
-        pendingPdfUrlRef.current = result.url;
+        pendingPdfRef.current = { url: result.url, filename: result.filename };
         setSigningMessage(null);
         setTimeout(openPendingPdf, 350);
       } catch (err) {
