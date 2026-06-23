@@ -25,13 +25,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
   Keyboard,
-  Linking,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
@@ -42,6 +40,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatMessage } from '@/components/chat/ChatMessage';
+import { PdfPreview } from '@/components/chat/PdfPreview';
 import { SignaturePad } from '@/components/chat/SignaturePad';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
 import { ThinkingIndicator } from '@/components/chat/ThinkingIndicator';
@@ -90,12 +89,15 @@ export const AskAITab: React.FC = () => {
   // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
   const [signingMessage, setSigningMessage] = useState<Message | null>(null);
   const [isSigning, setIsSigning] = useState(false);
+  // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
+  const [pdfPreview, setPdfPreview] = useState<{ uri: string; filename?: string } | null>(null);
 
-  // Suspend tab-swipe while the signature pad is open so drawing strokes don't switch tabs.
+  // Suspend tab-swipe while the signature pad or PDF preview is open (so gestures don't switch tabs).
   useEffect(() => {
-    setSwipeEnabled?.(!signingMessage);
+    const blocking = !!signingMessage || !!pdfPreview;
+    setSwipeEnabled?.(!blocking);
     return () => setSwipeEnabled?.(true);
-  }, [signingMessage, setSwipeEnabled]);
+  }, [signingMessage, pdfPreview, setSwipeEnabled]);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
@@ -574,9 +576,10 @@ export const AskAITab: React.FC = () => {
     [handleSendEstimate]
   );
 
-  // Download the PDF to a local file and present it in the iOS preview/share sheet. The signed
-  // PDF's presigned S3 URL is served with Content-Disposition: attachment, which an in-app
-  // browser (SFSafariViewController) can't display — so we download + Sharing.shareAsync instead.
+  // Download the PDF to a local file and show it inline in a WebView preview (PdfPreview). The
+  // signed PDF's presigned S3 URL is served with Content-Disposition: attachment, which an in-app
+  // browser (SFSafariViewController) can't display — and a remote attachment URL won't render in a
+  // WebView either, so we download first and preview the local file (no forced download).
   const openPdfInApp = useCallback(async (url: string, filename?: string) => {
     if (isOpeningPdfRef.current) return;
     isOpeningPdfRef.current = true;
@@ -584,15 +587,8 @@ export const AskAITab: React.FC = () => {
       const safeName = (filename || 'Estimate.pdf').replace(/[^\w.\-]+/g, '_');
       const localUri = `${cacheDirectory ?? ''}${safeName}`;
       const { uri } = await downloadAsync(url, localUri);
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'application/pdf',
-          UTI: 'com.adobe.pdf',
-          dialogTitle: 'Quotation PDF',
-        });
-      } else {
-        await Linking.openURL(url);
-      }
+      // Show an inline preview (WebView) rather than forcing a download/share sheet.
+      setPdfPreview({ uri, filename: safeName });
     } catch (err) {
       console.warn('[AskAI] Failed to open quotation PDF', err);
     } finally {
@@ -1440,6 +1436,12 @@ export const AskAITab: React.FC = () => {
         onCancel={() => setSigningMessage(null)}
         onSubmit={handleSubmitSignature}
         onDismiss={openPendingPdf}
+      />
+      <PdfPreview
+        visible={!!pdfPreview}
+        uri={pdfPreview?.uri ?? null}
+        filename={pdfPreview?.filename}
+        onClose={() => setPdfPreview(null)}
       />
     </SafeAreaView>
   );
