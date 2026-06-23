@@ -29,12 +29,17 @@ interface ChatMessageProps {
   onAnswerQuestion?: (value: string) => void;
   /** Estimate Cost: download/open the generated quotation PDF for this message. */
   onDownloadPdf?: (message: Message) => void | Promise<void>;
+  /** Estimate Cost: open the signature pad to confirm this quote. */
+  onSignDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument }) => {
   const { colors } = useTheme();
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
+  // Estimate quote signing state: signed once a PDF exists; needs a signature when `done` flagged it.
+  const isSigned = !!(message.metadata?.quote?.signed || message.metadata?.quotePdf?.url);
+  const needsSignature = !!message.metadata?.requiresSignature;
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set());
@@ -357,7 +362,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             quote={message.metadata.quote}
             downloadingPdf={downloadingPdf}
             onDownloadPdf={
-              onDownloadPdf && (message.metadata?.quotePdf?.url || message.metadata?.quote?.pdfKey)
+              onDownloadPdf && isSigned
                 ? async () => {
                     setDownloadingPdf(true);
                     try {
@@ -366,6 +371,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                       setDownloadingPdf(false);
                     }
                   }
+                : undefined
+            }
+            onSign={
+              !isSigned && needsSignature && onSignDocument
+                ? () => onSignDocument(message)
                 : undefined
             }
           />

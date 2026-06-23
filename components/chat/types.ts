@@ -20,7 +20,9 @@ export interface Message {
     questions?: FollowUpQuestion[];
     /** Intermediate workflow events (node/identified) shown in the collapsible thinking dropdown. */
     thinkingTrace?: ThinkingStep[];
-    /** Downloadable quotation PDF (quote turns only) — presigned URL + metadata. */
+    /** True on a quote turn (from `done`) — the customer must sign before a PDF is generated. */
+    requiresSignature?: boolean;
+    /** The signed quotation PDF (presigned URL + metadata) — set after the customer signs. */
     quotePdf?: EstimatePdf;
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
@@ -29,7 +31,7 @@ export interface Message {
 
 export type EstimateResponseKind = 'quote' | 'questions' | 'message';
 
-/** The generated quotation PDF emitted by the `quote_pdf` SSE event (quote turns only). */
+/** The signed quotation PDF returned by the `POST …/estimate/:messageId/sign` endpoint. */
 export interface EstimatePdf {
   /** Presigned, downloadable S3 URL (Content-Disposition: attachment). Expires ~24h. */
   url: string;
@@ -37,6 +39,10 @@ export interface EstimatePdf {
   key?: string;
   /** Suggested filename, e.g. "Estimate-E0ABC12.pdf". */
   filename?: string;
+  /** Human-facing estimate number, e.g. "E0ABC12". */
+  estimateNumber?: string;
+  /** ISO timestamp the estimate was signed. */
+  signedAt?: string;
 }
 
 /** LangGraph node names emitted by the estimate workflow. */
@@ -131,10 +137,16 @@ export interface EstimateQuote {
   assumptions: string[];
   /** NFPA compliance flags / advisories. */
   customerNotes: string[];
-  /** S3 key of the generated quotation PDF (persisted on `done`). */
+  /** S3 key of the generated quotation PDF (set after signing). */
   pdfKey?: string;
   /** Human-facing estimate number, e.g. "E0ABC12". */
   estimateNumber?: string;
+  /** True once the customer has signed and the PDF has been generated. */
+  signed?: boolean;
+  /** ISO timestamp the estimate was signed. */
+  signedAt?: string;
+  /** Customer name captured on the signature pad. */
+  signerName?: string;
 }
 
 export interface MessageAttachment {

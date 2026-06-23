@@ -9,10 +9,14 @@ import type { EstimateLineItemKind, EstimateQuote } from '@/components/chat/type
 
 interface QuoteCardProps {
   quote: EstimateQuote;
-  /** When provided, render a "Download PDF" footer button that invokes this on press. */
+  /** When provided (signed quote), render a "Download PDF" footer button. */
   onDownloadPdf?: () => void;
   /** Show a spinner on the download button while the PDF link resolves / opens. */
   downloadingPdf?: boolean;
+  /** When provided (unsigned quote), render a "Sign the document" footer button. */
+  onSign?: () => void;
+  /** Show a spinner on the sign button while the signed PDF is generated. */
+  signing?: boolean;
 }
 
 const KIND_VARIANT: Record<EstimateLineItemKind, BadgeVariant> = {
@@ -53,7 +57,7 @@ const firstFinite = (...values: unknown[]): number | undefined => {
  * (pricebook code + kind), the materials/labor/tax subtotals and total, plus
  * collapsible assumptions and customer (NFPA) notes.
  */
-export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false }) => {
+export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false, onSign, signing = false }) => {
   const { colors } = useTheme();
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
 
@@ -261,7 +265,7 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, down
         </>
       ) : null}
 
-      {/* Download PDF */}
+      {/* Signed → Download PDF; otherwise → Sign the document */}
       {onDownloadPdf ? (
         <Pressable
           style={[styles.downloadButton, { backgroundColor: colors.primary }]}
@@ -278,6 +282,24 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, down
           )}
           <ThemedText style={styles.downloadLabel}>
             {downloadingPdf ? 'Opening…' : 'Download PDF'}
+          </ThemedText>
+        </Pressable>
+      ) : onSign ? (
+        <Pressable
+          style={[styles.downloadButton, { backgroundColor: colors.primary }]}
+          onPress={onSign}
+          disabled={signing}
+          accessibilityRole="button"
+          accessibilityLabel="Sign the document"
+          accessibilityState={{ disabled: signing }}
+        >
+          {signing ? (
+            <ActivityIndicator size="small" color="#ffffff" />
+          ) : (
+            <Ionicons name="create-outline" size={16} color="#ffffff" />
+          )}
+          <ThemedText style={styles.downloadLabel}>
+            {signing ? 'Generating…' : 'Sign the document'}
           </ThemedText>
         </Pressable>
       ) : null}
