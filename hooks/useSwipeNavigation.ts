@@ -7,6 +7,8 @@ export interface SwipeNavigationConfig<T extends string> {
   onTabChange: (tab: T) => void;
   swipeThreshold?: number;
   animationDuration?: number;
+  /** When false, the swipe gesture is disabled (e.g. while a signature pad/modal is open). */
+  enabled?: boolean;
 }
 
 export interface SwipeNavigationReturn<T extends string = string> {
@@ -24,6 +26,7 @@ export const useSwipeNavigation = <T extends string>({
   onTabChange,
   swipeThreshold = 50,
   animationDuration = 150,
+  enabled = true,
 }: SwipeNavigationConfig<T>): SwipeNavigationReturn<T> => {
   const screenWidth = Dimensions.get('window').width;
 
@@ -32,10 +35,15 @@ export const useSwipeNavigation = <T extends string>({
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
   const activeTabRef = useRef<T>(activeTab);
+  const enabledRef = useRef(enabled);
 
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
 
   // Single-phase tab change: update state immediately, then run a quick
   // native-driven fade-in. No JS callback between phases — eliminates the
@@ -77,6 +85,7 @@ export const useSwipeNavigation = <T extends string>({
         _evt: GestureResponderEvent,
         gestureState: PanResponderGestureState,
       ) => {
+        if (!enabledRef.current) return false;
         return (
           Math.abs(gestureState.dx) > 10 &&
           Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
