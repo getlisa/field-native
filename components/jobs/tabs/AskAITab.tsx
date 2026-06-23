@@ -98,6 +98,9 @@ export const AskAITab: React.FC = () => {
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
+  // Signed-PDF URL to open once the signature modal has fully dismissed (avoids an iOS
+  // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
+  const pendingPdfUrlRef = useRef<string | null>(null);
 
   // TTS hook for voice agent
   const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
@@ -599,6 +602,17 @@ export const AskAITab: React.FC = () => {
     setSigningMessage(message);
   }, []);
 
+  // Open the signed PDF queued during signing. Captures-and-clears the ref so whichever of
+  // onDismiss / the timeout safety-net fires first wins and the other is a no-op.
+  const openPendingPdf = useCallback(() => {
+    const url = pendingPdfUrlRef.current;
+    if (!url) return;
+    pendingPdfUrlRef.current = null;
+    WebBrowser.openBrowserAsync(url).catch((err) =>
+      console.warn('[AskAI] Failed to open signed PDF', err)
+    );
+  }, []);
+
   // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
   // on the message (so the card flips to "Download PDF"), then open the PDF.
   const handleSubmitSignature = useCallback(
@@ -648,15 +662,19 @@ export const AskAITab: React.FC = () => {
               : msg
           )
         );
+        // Queue the PDF and close the pad. Opening the in-app browser is deferred until the
+        // modal has fully dismissed (via onDismiss / the timeout) to avoid an iOS freeze from
+        // presenting a view controller while the modal is still dismissing.
+        pendingPdfUrlRef.current = result.url;
         setSigningMessage(null);
-        await WebBrowser.openBrowserAsync(result.url);
+        setTimeout(openPendingPdf, 350);
       } catch (err) {
         console.warn('[AskAI] Failed to sign estimate', err);
       } finally {
         setIsSigning(false);
       }
     },
-    [signingMessage, isSigning, conversationId, ensureConversation]
+    [signingMessage, isSigning, conversationId, ensureConversation, openPendingPdf]
   );
 
   /**
@@ -1396,6 +1414,7 @@ export const AskAITab: React.FC = () => {
         submitting={isSigning}
         onCancel={() => setSigningMessage(null)}
         onSubmit={handleSubmitSignature}
+        onDismiss={openPendingPdf}
       />
     </SafeAreaView>
   );
