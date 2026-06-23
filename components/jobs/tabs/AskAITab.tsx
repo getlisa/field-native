@@ -40,6 +40,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatMessage } from '@/components/chat/ChatMessage';
+import { SignaturePad } from '@/components/chat/SignaturePad';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
 import { ThinkingIndicator } from '@/components/chat/ThinkingIndicator';
 import { ThemedText } from '@/components/themed-text';
@@ -51,7 +52,6 @@ import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
 import type {
-  EstimatePdf,
   EstimateQuote,
   FollowUpQuestion,
   IdentifiedEquipment,
@@ -85,6 +85,9 @@ export const AskAITab: React.FC = () => {
   // Estimate Cost demo mode — sticky toggle in the chat bar. Routes the next send
   // to the estimate endpoint instead of the normal copilot stream.
   const [estimateMode, setEstimateMode] = useState(false);
+  // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
+  const [signingMessage, setSigningMessage] = useState<Message | null>(null);
+  const [isSigning, setIsSigning] = useState(false);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
@@ -343,7 +346,6 @@ export const AskAITab: React.FC = () => {
         let messageCreated = false;
         let quoteData: EstimateQuote | undefined;
         let questionsData: FollowUpQuestion[] | undefined;
-        let pdfData: EstimatePdf | undefined;
         let responseKind: 'quote' | 'questions' | 'message' | undefined;
         // Intermediate workflow events (node/identified) shown in the thinking dropdown.
         const trace: ThinkingStep[] = [];
@@ -369,7 +371,6 @@ export const AskAITab: React.FC = () => {
           if (responseKind) meta.responseKind = responseKind;
           if (quoteData) meta.quote = quoteData;
           if (questionsData) meta.questions = questionsData;
-          if (pdfData) meta.quotePdf = pdfData;
           if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
           return meta;
         };
@@ -469,10 +470,6 @@ export const AskAITab: React.FC = () => {
               // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
               quoteData = event.data as unknown as EstimateQuote;
               upsertAssistant();
-            } else if (event.type === 'quote_pdf' && event.url) {
-              // Generated quotation PDF — presigned, downloadable URL + metadata.
-              pdfData = { url: event.url, key: event.key, filename: event.filename };
-              upsertAssistant();
             } else if (event.type === 'questions') {
               questionsData = extractQuestions(event);
               upsertAssistant();
@@ -487,10 +484,12 @@ export const AskAITab: React.FC = () => {
               };
               const quote = quoteData ?? serverMeta.quote;
               const questions = questionsData ?? serverMeta.questions;
-              const pdf = pdfData ?? serverMeta.quotePdf;
+              const requiresSignature = event.requiresSignature ?? serverMeta.requiresSignature;
               if (quote) finalMeta.quote = quote;
               if (questions) finalMeta.questions = questions;
-              if (pdf) finalMeta.quotePdf = pdf;
+              if (requiresSignature) finalMeta.requiresSignature = true;
+              // Preserve a previously-signed PDF if the message is re-hydrated/updated.
+              if (serverMeta.quotePdf) finalMeta.quotePdf = serverMeta.quotePdf;
               trace.forEach((s) => {
                 if (s.status === 'active') s.status = 'done';
               });
@@ -587,6 +586,71 @@ export const AskAITab: React.FC = () => {
       }
     },
     [conversationId, ensureConversation]
+  );
+
+  // Estimate Cost: open the signature pad for a quote message.
+  const handleSignDocument = useCallback((message: Message) => {
+    setSigningMessage(message);
+  }, []);
+
+  // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
+  // on the message (so the card flips to "Download PDF"), then open the PDF.
+  const handleSubmitSignature = useCallback(
+    async (signatureBase64: string, signerName: string) => {
+      const target = signingMessage;
+      if (!target || isSigning) return;
+      setIsSigning(true);
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        if (!convId) {
+          console.warn('[AskAI] No conversation ID, cannot sign');
+          return;
+        }
+        const result = await copilotChatService.signEstimate({
+          conversationId: convId,
+          messageId: target.id,
+          signatureBase64,
+          signerName,
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === target.id
+              ? {
+                  ...msg,
+                  metadata: {
+                    ...msg.metadata,
+                    requiresSignature: false,
+                    quote: msg.metadata?.quote
+                      ? {
+                          ...msg.metadata.quote,
+                          signed: true,
+                          signedAt: result.signedAt,
+                          signerName,
+                          pdfKey: result.key ?? msg.metadata.quote.pdfKey,
+                          estimateNumber: result.estimateNumber ?? msg.metadata.quote.estimateNumber,
+                        }
+                      : msg.metadata?.quote,
+                    quotePdf: {
+                      url: result.url,
+                      key: result.key,
+                      filename: result.filename,
+                      estimateNumber: result.estimateNumber,
+                      signedAt: result.signedAt,
+                    },
+                  },
+                }
+              : msg
+          )
+        );
+        setSigningMessage(null);
+        await WebBrowser.openBrowserAsync(result.url);
+      } catch (err) {
+        console.warn('[AskAI] Failed to sign estimate', err);
+      } finally {
+        setIsSigning(false);
+      }
+    },
+    [signingMessage, isSigning, conversationId, ensureConversation]
   );
 
   /**
@@ -1221,9 +1285,10 @@ export const AskAITab: React.FC = () => {
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
         onAnswerQuestion={handleAnswerQuestion}
         onDownloadPdf={handleDownloadPdf}
+        onSignDocument={handleSignDocument}
       />
     ),
-    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf]
+    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -1320,6 +1385,12 @@ export const AskAITab: React.FC = () => {
         />
       </View>
       </View>
+      <SignaturePad
+        visible={!!signingMessage}
+        submitting={isSigning}
+        onCancel={() => setSigningMessage(null)}
+        onSubmit={handleSubmitSignature}
+      />
     </SafeAreaView>
   );
 };
