@@ -31,9 +31,11 @@ interface ChatMessageProps {
   onDownloadPdf?: (message: Message) => void | Promise<void>;
   /** Estimate Cost: open the signature pad to confirm this quote. */
   onSignDocument?: (message: Message) => void;
+  /** Estimate Cost: email the signed PDF to the customer. */
+  onEmailDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument, onEmailDocument }) => {
   const { colors } = useTheme();
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
@@ -378,6 +380,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                 ? () => onSignDocument(message)
                 : undefined
             }
+            onEmail={
+              isSigned && onEmailDocument ? () => onEmailDocument(message) : undefined
+            }
+            emailedTo={message.metadata?.quote?.emailedTo}
           />
         ) : null}
         {isAssistant && message.metadata?.questions?.length ? (

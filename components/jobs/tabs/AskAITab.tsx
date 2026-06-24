@@ -40,6 +40,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatMessage } from '@/components/chat/ChatMessage';
+import { EmailModal } from '@/components/chat/EmailModal';
 import { PdfPreview } from '@/components/chat/PdfPreview';
 import { SignaturePad } from '@/components/chat/SignaturePad';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
@@ -90,13 +91,17 @@ export const AskAITab: React.FC = () => {
   const [isSigning, setIsSigning] = useState(false);
   // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
   const [pdfPreview, setPdfPreview] = useState<{ uri: string; filename?: string } | null>(null);
+  // Estimate Cost emailing: the quote message whose email modal is open, + in-flight flag + error.
+  const [emailingMessage, setEmailingMessage] = useState<Message | null>(null);
+  const [isEmailing, setIsEmailing] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
 
-  // Suspend tab-swipe while the signature pad or PDF preview is open (so gestures don't switch tabs).
+  // Suspend tab-swipe while a signature pad / PDF preview / email modal is open (gestures stay put).
   useEffect(() => {
-    const blocking = !!signingMessage || !!pdfPreview;
+    const blocking = !!signingMessage || !!pdfPreview || !!emailingMessage;
     setSwipeEnabled?.(!blocking);
     return () => setSwipeEnabled?.(true);
-  }, [signingMessage, pdfPreview, setSwipeEnabled]);
+  }, [signingMessage, pdfPreview, emailingMessage, setSwipeEnabled]);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
@@ -615,6 +620,58 @@ export const AskAITab: React.FC = () => {
     setSigningMessage(message);
   }, []);
 
+  // Estimate Cost: open the email modal for a signed quote (prefill comes from quote.suggestedCustomerEmail).
+  const handleEmailDocument = useCallback((message: Message) => {
+    setEmailError(null);
+    setEmailingMessage(message);
+  }, []);
+
+  // Estimate Cost: POST the confirmed customer email → server attaches the signed PDF + sends.
+  const handleSendEmail = useCallback(
+    async (to: string) => {
+      const target = emailingMessage;
+      if (!target || isEmailing) return;
+      setIsEmailing(true);
+      setEmailError(null);
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        if (!convId) {
+          setEmailError('No conversation available.');
+          return;
+        }
+        const result = await copilotChatService.sendEstimateEmail({
+          conversationId: convId,
+          messageId: target.id,
+          to,
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === target.id && msg.metadata?.quote
+              ? {
+                  ...msg,
+                  metadata: {
+                    ...msg.metadata,
+                    quote: {
+                      ...msg.metadata.quote,
+                      emailedTo: result.to ?? to,
+                      emailedAt: result.sentAt ?? new Date().toISOString(),
+                    },
+                  },
+                }
+              : msg
+          )
+        );
+        setEmailingMessage(null);
+      } catch (err) {
+        console.warn('[AskAI] Failed to email estimate', err);
+        setEmailError(err instanceof Error ? err.message : 'Failed to send email. Try again.');
+      } finally {
+        setIsEmailing(false);
+      }
+    },
+    [emailingMessage, isEmailing, conversationId, ensureConversation]
+  );
+
   // Open the signed PDF queued during signing. Captures-and-clears the ref so whichever of
   // onDismiss / the timeout safety-net fires first wins and the other is a no-op.
   const openPendingPdf = useCallback(() => {
@@ -659,6 +716,7 @@ export const AskAITab: React.FC = () => {
                           signerName,
                           pdfKey: result.key ?? msg.metadata.quote.pdfKey,
                           estimateNumber: result.estimateNumber ?? msg.metadata.quote.estimateNumber,
+                          suggestedCustomerEmail: result.suggestedCustomerEmail ?? msg.metadata.quote.suggestedCustomerEmail,
                         }
                       : msg.metadata?.quote,
                     quotePdf: {
@@ -1312,9 +1370,10 @@ export const AskAITab: React.FC = () => {
         onAnswerQuestion={handleAnswerQuestion}
         onDownloadPdf={handleDownloadPdf}
         onSignDocument={handleSignDocument}
+        onEmailDocument={handleEmailDocument}
       />
     ),
-    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument]
+    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument, handleEmailDocument]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -1423,6 +1482,17 @@ export const AskAITab: React.FC = () => {
         uri={pdfPreview?.uri ?? null}
         filename={pdfPreview?.filename}
         onClose={() => setPdfPreview(null)}
+      />
+      <EmailModal
+        visible={!!emailingMessage}
+        suggestedEmail={emailingMessage?.metadata?.quote?.suggestedCustomerEmail}
+        sending={isEmailing}
+        error={emailError}
+        onCancel={() => {
+          setEmailingMessage(null);
+          setEmailError(null);
+        }}
+        onSend={handleSendEmail}
       />
     </SafeAreaView>
   );

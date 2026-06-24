@@ -43,6 +43,8 @@ export interface EstimatePdf {
   estimateNumber?: string;
   /** ISO timestamp the estimate was signed. */
   signedAt?: string;
+  /** Customer email pulled from the job (pre-fills the email step); null if unknown. */
+  suggestedCustomerEmail?: string | null;
 }
 
 /** LangGraph node names emitted by the estimate workflow. */
@@ -147,6 +149,12 @@ export interface EstimateQuote {
   signedAt?: string;
   /** Customer name captured on the signature pad. */
   signerName?: string;
+  /** Suggested customer email from the job (pre-fills the email step); null if unknown. */
+  suggestedCustomerEmail?: string | null;
+  /** Address the signed PDF was emailed to (set after a successful send). */
+  emailedTo?: string;
+  /** ISO timestamp the estimate was emailed. */
+  emailedAt?: string;
 }
 
 export interface MessageAttachment {
