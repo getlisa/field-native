@@ -17,6 +17,12 @@ interface QuoteCardProps {
   onSign?: () => void;
   /** Show a spinner on the sign button while the signed PDF is generated. */
   signing?: boolean;
+  /** When provided (signed quote), render a "Send email" footer button. */
+  onEmail?: () => void;
+  /** Show a spinner on the email button while the send is in flight. */
+  emailing?: boolean;
+  /** Address the PDF was emailed to (shows a confirmation line instead of re-prompting). */
+  emailedTo?: string;
 }
 
 const KIND_VARIANT: Record<EstimateLineItemKind, BadgeVariant> = {
@@ -57,7 +63,7 @@ const firstFinite = (...values: unknown[]): number | undefined => {
  * (pricebook code + kind), the materials/labor/tax subtotals and total, plus
  * collapsible assumptions and customer (NFPA) notes.
  */
-export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false, onSign, signing = false }) => {
+export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false, onSign, signing = false, onEmail, emailing = false, emailedTo }) => {
   const { colors } = useTheme();
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
 
@@ -265,25 +271,56 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, down
         </>
       ) : null}
 
-      {/* Signed → Download PDF; otherwise → Sign the document */}
+      {/* Signed → Download PDF + Send email; otherwise → Sign the document */}
       {onDownloadPdf ? (
-        <Pressable
-          style={[styles.downloadButton, { backgroundColor: colors.primary }]}
-          onPress={onDownloadPdf}
-          disabled={downloadingPdf}
-          accessibilityRole="button"
-          accessibilityLabel="Download quotation PDF"
-          accessibilityState={{ disabled: downloadingPdf }}
-        >
-          {downloadingPdf ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <Ionicons name="document-text-outline" size={16} color="#ffffff" />
-          )}
-          <ThemedText style={styles.downloadLabel}>
-            {downloadingPdf ? 'Opening…' : 'Download PDF'}
-          </ThemedText>
-        </Pressable>
+        <>
+          <View style={styles.actionRow}>
+            <Pressable
+              style={[styles.actionButton, { backgroundColor: colors.primary }]}
+              onPress={onDownloadPdf}
+              disabled={downloadingPdf}
+              accessibilityRole="button"
+              accessibilityLabel="Download quotation PDF"
+              accessibilityState={{ disabled: downloadingPdf }}
+            >
+              {downloadingPdf ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Ionicons name="document-text-outline" size={16} color="#ffffff" />
+              )}
+              <ThemedText style={styles.downloadLabel}>
+                {downloadingPdf ? 'Opening…' : 'Download'}
+              </ThemedText>
+            </Pressable>
+            {onEmail ? (
+              <Pressable
+                style={[styles.actionButton, styles.emailButton, { borderColor: colors.primary }]}
+                onPress={onEmail}
+                disabled={emailing}
+                accessibilityRole="button"
+                accessibilityLabel="Send estimate by email"
+                accessibilityState={{ disabled: emailing }}
+              >
+                {emailing ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Ionicons name="mail-outline" size={16} color={colors.primary} />
+                )}
+                <ThemedText style={[styles.downloadLabel, { color: colors.primary }]}>
+                  {emailing ? 'Sending…' : 'Send email'}
+                </ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+          {emailedTo ? (
+            <View style={styles.emailedRow}>
+              <Ionicons name="checkmark-circle" size={13} color={colors.success} />
+              <ThemedText style={[styles.emailedText, { color: colors.textSecondary }]} numberOfLines={1}>
+                Emailed to {emailedTo}
+              </ThemedText>
+            </View>
+          ) : null}
+        </>
       ) : onSign ? (
         <Pressable
           style={[styles.downloadButton, { backgroundColor: colors.primary }]}
@@ -473,6 +510,34 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  emailButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+  },
+  emailedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  emailedText: {
+    flex: 1,
+    fontSize: 12,
   },
 });
 

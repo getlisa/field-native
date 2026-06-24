@@ -561,7 +561,7 @@ export const copilotChatService = {
     messageId: string;
     signatureBase64: string;
     signerName?: string;
-  }): Promise<{ url: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string }> {
+  }): Promise<{ url: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string; suggestedCustomerEmail?: string | null }> {
     const res = await fetch(
       `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/sign`,
       {
@@ -583,9 +583,32 @@ export const copilotChatService = {
   },
 
   /**
-   * Resolve a fresh, downloadable URL for a signed quote's PDF. Presigned URLs expire (~24h),
-   * so this hits the durable re-download endpoint which always re-presigns:
-   *   GET /copilot/:conversationId/estimate/:messageId/pdf → 302 to a fresh presigned URL.
+   * Email the signed estimate PDF to the customer (call after signing + confirming the address).
+   *   POST /copilot/:conversationId/estimate/:messageId/email  body { to }
+   * The signed PDF is attached server-side. Throws (via handleJsonResponse) on 400 (invalid email),
+   * 404 (message not found), 409 (not a quote turn / not signed yet), 503 (email not configured).
+   */
+  async sendEstimateEmail(params: {
+    conversationId: string;
+    messageId: string;
+    to: string;
+  }): Promise<{ to: string; from?: string; cc?: string | null; sentAt?: string }> {
+    const res = await fetch(
+      `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/email`,
+      {
+        method: 'POST',
+        headers: buildHeaders(true),
+        body: JSON.stringify({ to: params.to }),
+      }
+    );
+    const json = await handleJsonResponse<{ success?: boolean; data?: any }>(res);
+    return json?.data ?? json;
+  },
+
+  /**
+   * Resolve a downloadable URL for a signed quote's PDF via the durable re-download endpoint:
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf → 302 to the PDF (permanent CloudFront
+   *   URL in prod, or a fresh presigned URL otherwise — never a stale link).
    * Returns null on 404 (no such message) or 409 (not signed yet) or any error, so callers
    * can fall back to a stored URL.
    */
