@@ -25,6 +25,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -91,7 +92,7 @@ export const AskAITab: React.FC = () => {
   const [signingMessage, setSigningMessage] = useState<Message | null>(null);
   const [isSigning, setIsSigning] = useState(false);
   // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
-  const [pdfPreview, setPdfPreview] = useState<{ uri: string; filename?: string } | null>(null);
+  const [pdfPreview, setPdfPreview] = useState<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
   // Estimate Cost emailing: the quote message whose email modal is open, + in-flight flag + error.
   const [emailingMessage, setEmailingMessage] = useState<Message | null>(null);
   const [isEmailing, setIsEmailing] = useState(false);
@@ -109,7 +110,7 @@ export const AskAITab: React.FC = () => {
   const streamingMessageIdRef = useRef<string | null>(null);
   // Signed PDF to open once the signature modal has fully dismissed (avoids an iOS
   // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
-  const pendingPdfRef = useRef<{ url: string; filename?: string } | null>(null);
+  const pendingPdfRef = useRef<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
   // Re-entrancy guard so rapid Download taps don't stack downloads/preview sheets.
   const isOpeningPdfRef = useRef(false);
 
@@ -581,48 +582,49 @@ export const AskAITab: React.FC = () => {
     [handleSendEstimate]
   );
 
-  // Download the PDF to a local file and show it inline in a WebView preview (PdfPreview). The
-  // signed PDF's presigned S3 URL is served with Content-Disposition: attachment, which an in-app
-  // browser (SFSafariViewController) can't display — and a remote attachment URL won't render in a
-  // WebView either, so we download first and preview the local file (no forced download).
-  const openPdfInApp = useCallback(async (url: string, filename?: string) => {
+  // Share/Save: download the attachment PDF to a local file and present the iOS share sheet.
+  // (The inline preview renders the remote URL directly; this is only for the explicit Share action.)
+  const openPdfInApp = useCallback(async (downloadUrl: string, filename?: string) => {
     if (isOpeningPdfRef.current) return;
     isOpeningPdfRef.current = true;
     try {
       const safeName = (filename || 'Estimate.pdf').replace(/[^\w.\-]+/g, '_');
       const localUri = `${cacheDirectory ?? ''}${safeName}`;
-      const { uri } = await downloadAsync(url, localUri);
-      // Show an inline preview (WebView) rather than forcing a download/share sheet.
-      setPdfPreview({ uri, filename: safeName });
+      const { uri } = await downloadAsync(downloadUrl, localUri);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: safeName,
+        });
+      }
     } catch (err) {
-      console.warn('[AskAI] Failed to open quotation PDF', err);
+      console.warn('[AskAI] Failed to share quotation PDF', err);
     } finally {
       isOpeningPdfRef.current = false;
     }
   }, []);
 
-  // Estimate Cost: open the generated quotation PDF. Prefers the fresh presigned URL captured at
-  // sign time; falls back to the durable re-download endpoint for rehydrated/expired quotes.
+  // Estimate Cost: open the inline PDF preview (WebView loads …/pdf?inline=1 directly — no download).
+  // previewUrl renders in the WebView; downloadUrl (permanent attachment endpoint) backs Share/Save.
   const handleDownloadPdf = useCallback(
     async (message: Message) => {
-      let url: string | null = message.metadata?.quotePdf?.url ?? null;
-      if (!url) {
-        const convId = conversationId ?? (await ensureConversation());
-        if (convId && message.id) {
-          url = await copilotChatService.getEstimatePdfUrl({
-            conversationId: convId,
-            messageId: message.id,
-          });
-        }
-      }
-      if (__DEV__) console.log('[AskAI] Download PDF url:', url);
-      if (!url) {
-        console.warn('[AskAI] No PDF URL available for message', message.id);
+      const convId = conversationId ?? (await ensureConversation());
+      if (!convId || !message.id) {
+        console.warn('[AskAI] No conversation/message id for PDF preview');
         return;
       }
-      await openPdfInApp(url, message.metadata?.quotePdf?.filename);
+      const previewUrl = copilotChatService.estimatePdfUrl({
+        conversationId: convId,
+        messageId: message.id,
+        inline: true,
+      });
+      const downloadUrl =
+        message.metadata?.quotePdf?.url ??
+        copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: message.id });
+      setPdfPreview({ previewUrl, downloadUrl, filename: message.metadata?.quotePdf?.filename });
     },
-    [conversationId, ensureConversation, openPdfInApp]
+    [conversationId, ensureConversation]
   );
 
   // Estimate Cost: open the signature pad for a quote message.
@@ -688,8 +690,8 @@ export const AskAITab: React.FC = () => {
     const pending = pendingPdfRef.current;
     if (!pending) return;
     pendingPdfRef.current = null;
-    void openPdfInApp(pending.url, pending.filename);
-  }, [openPdfInApp]);
+    setPdfPreview(pending);
+  }, []);
 
   // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
   // on the message (so the card flips to "Download PDF"), then open the PDF.
@@ -741,10 +743,13 @@ export const AskAITab: React.FC = () => {
               : msg
           )
         );
-        // Queue the PDF and close the pad. Opening the in-app browser is deferred until the
-        // modal has fully dismissed (via onDismiss / the timeout) to avoid an iOS freeze from
-        // presenting a view controller while the modal is still dismissing.
-        pendingPdfRef.current = { url: result.url, filename: result.filename };
+        // Queue the inline preview and close the pad. Opening it is deferred until the modal has
+        // fully dismissed (via onDismiss / the timeout) to avoid an iOS present-while-dismissing freeze.
+        pendingPdfRef.current = {
+          previewUrl: copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: target.id, inline: true }),
+          downloadUrl: result.url,
+          filename: result.filename,
+        };
         setSigningMessage(null);
         setTimeout(openPendingPdf, 350);
       } catch (err) {
@@ -1498,9 +1503,10 @@ export const AskAITab: React.FC = () => {
       />
       <PdfPreview
         visible={!!pdfPreview}
-        uri={pdfPreview?.uri ?? null}
+        url={pdfPreview?.previewUrl ?? null}
         filename={pdfPreview?.filename}
         onClose={() => setPdfPreview(null)}
+        onShare={pdfPreview ? () => openPdfInApp(pdfPreview.downloadUrl, pdfPreview.filename) : undefined}
       />
       <EmailModal
         visible={!!emailingMessage}

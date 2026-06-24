@@ -1,5 +1,4 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as Sharing from 'expo-sharing';
 import React, { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,36 +9,22 @@ import { useTheme } from '@/contexts/ThemeContext';
 
 interface PdfPreviewProps {
   visible: boolean;
-  /** Local file:// URI of the downloaded PDF. */
-  uri: string | null;
+  /** Remote inline PDF URL (…/pdf?inline=1) — rendered directly in the WebView. */
+  url: string | null;
   filename?: string;
   onClose: () => void;
+  /** Download + share the PDF (parent handles the file write + iOS share sheet). */
+  onShare?: () => void;
 }
 
 /**
- * Full-screen inline preview of a downloaded PDF (rendered in a WebView so the user can read
- * it without saving). A Share button presents the iOS share sheet for those who want to save.
+ * Full-screen inline preview of the signed quotation PDF. Loads the backend's inline streaming
+ * endpoint directly in a WebView so the user can read it without downloading. The Share button
+ * delegates to the parent (download + iOS share sheet) for saving.
  */
-export const PdfPreview: React.FC<PdfPreviewProps> = ({ visible, uri, filename, onClose }) => {
+export const PdfPreview: React.FC<PdfPreviewProps> = ({ visible, url, filename, onClose, onShare }) => {
   const { colors } = useTheme();
   const [loading, setLoading] = useState(true);
-  // Grant WKWebView read access to the folder holding the local file.
-  const readAccess = uri ? uri.slice(0, uri.lastIndexOf('/') + 1) : undefined;
-
-  const share = async () => {
-    if (!uri) return;
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'application/pdf',
-          UTI: 'com.adobe.pdf',
-          dialogTitle: filename || 'Quotation PDF',
-        });
-      }
-    } catch {
-      // ignore — preview still available
-    }
-  };
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen">
@@ -51,13 +36,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ visible, uri, filename, 
           </ThemedText>
         </View>
         <View style={styles.body}>
-          {uri ? (
+          {url ? (
             <WebView
-              source={{ uri }}
+              source={{ uri: url }}
               originWhitelist={['*']}
-              allowFileAccess
-              allowFileAccessFromFileURLs
-              allowingReadAccessToURL={readAccess}
               onLoadStart={() => setLoading(true)}
               onLoadEnd={() => setLoading(false)}
               style={styles.webview}
@@ -82,7 +64,8 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({ visible, uri, filename, 
           </Pressable>
           <Pressable
             style={[styles.actionButton, styles.actionPrimary, { backgroundColor: colors.primary }]}
-            onPress={share}
+            onPress={onShare}
+            disabled={!onShare}
             accessibilityRole="button"
             accessibilityLabel="Share or save PDF"
           >
