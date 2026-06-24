@@ -24,6 +24,8 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
+import { cacheDirectory, downloadAsync } from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -39,6 +41,9 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChatMessage } from '@/components/chat/ChatMessage';
+import { EmailModal } from '@/components/chat/EmailModal';
+import { PdfPreview } from '@/components/chat/PdfPreview';
+import { SignaturePad } from '@/components/chat/SignaturePad';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
 import { ThinkingIndicator } from '@/components/chat/ThinkingIndicator';
 import { ThemedText } from '@/components/themed-text';
@@ -48,11 +53,18 @@ import { copilotChatService, type CopilotMessage } from '@/services/copilotChatS
 import { useAuthStore } from '@/store/useAuthStore';
 import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import type { MediaAsset } from '@/lib/media';
-import type { Message, PendingImage } from '@/components/chat/types';
+import type {
+  EstimateQuote,
+  FollowUpQuestion,
+  IdentifiedEquipment,
+  Message,
+  PendingImage,
+  ThinkingStep,
+} from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
 
 export const AskAITab: React.FC = () => {
-  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription } = useJobDetailContext();
+  const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription, setSwipeEnabled } = useJobDetailContext();
   const { user } = useAuthStore();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -72,10 +84,34 @@ export const AskAITab: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  // Estimate Cost demo mode — sticky toggle in the chat bar. Routes the next send
+  // to the estimate endpoint instead of the normal copilot stream.
+  const [estimateMode, setEstimateMode] = useState(false);
+  // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
+  const [signingMessage, setSigningMessage] = useState<Message | null>(null);
+  const [isSigning, setIsSigning] = useState(false);
+  // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
+  const [pdfPreview, setPdfPreview] = useState<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
+  // Estimate Cost emailing: the quote message whose email modal is open, + in-flight flag + error.
+  const [emailingMessage, setEmailingMessage] = useState<Message | null>(null);
+  const [isEmailing, setIsEmailing] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+
+  // Suspend tab-swipe while a signature pad / PDF preview / email modal is open (gestures stay put).
+  useEffect(() => {
+    const blocking = !!signingMessage || !!pdfPreview || !!emailingMessage;
+    setSwipeEnabled?.(!blocking);
+    return () => setSwipeEnabled?.(true);
+  }, [signingMessage, pdfPreview, emailingMessage, setSwipeEnabled]);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
+  // Signed PDF to open once the signature modal has fully dismissed (avoids an iOS
+  // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
+  const pendingPdfRef = useRef<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
+  // Re-entrancy guard so rapid Download taps don't stack downloads/preview sheets.
+  const isOpeningPdfRef = useRef(false);
 
   // TTS hook for voice agent
   const { addToQueue, flush, stop: stopTTS, isSpeaking } = useStreamingTTS();
@@ -262,16 +298,476 @@ export const AskAITab: React.FC = () => {
   }, []);
 
   /**
+   * Estimate Cost (demo) handler.
+   *
+   * Routes to the self-contained estimate endpoint. Sends the (optional) note plus the
+   * captured photo as inline base64, streams the markdown estimate, and attaches the
+   * structured `quote` to the assistant message so ChatMessage can render the quote card.
+   */
+  const handleSendEstimate = useCallback(
+    async (content: string) => {
+      const hasContent = content.trim().length > 0;
+      const imagesForEstimate = pendingImages;
+      const hasImages = imagesForEstimate.length > 0;
+      if (!isAllowed || (!hasContent && !hasImages)) return;
+
+      // Optimistic user message (with the captured photo shown via its local uri)
+      const tempUserMessage: Message = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content,
+        timestamp: new Date(),
+        contentType: hasImages ? 'IMAGE' : 'TEXT',
+        attachments: imagesForEstimate.map((img) => ({
+          id: img.id,
+          fileName: '',
+          fileType: img.type || 'image/jpeg',
+          fileSize: 0,
+          url: img.uri,
+        })),
+      };
+      setMessages((prev) => [...prev, tempUserMessage]);
+      setIsLoading(true);
+      setPendingImages([]);
+
+      try {
+        const convId = await ensureConversation();
+        if (!convId) {
+          console.warn('[AskAI] No conversation ID, aborting estimate');
+          return;
+        }
+
+        // Read the captured photo to base64 (no data: prefix, per the endpoint contract)
+        let imageBase64: string | undefined;
+        let imageMimeType: string | undefined;
+        const firstImage = imagesForEstimate[0];
+        if (firstImage) {
+          try {
+            imageBase64 = await FileSystem.readAsStringAsync(firstImage.uri, {
+              encoding: 'base64',
+            });
+            imageMimeType = firstImage.type || 'image/jpeg';
+          } catch (readErr) {
+            console.warn('[AskAI] Failed to read estimate image for base64', readErr);
+          }
+        }
+
+        const aiMessageId = `ai-${Date.now()}`;
+        let assistantContent = '';
+        let messageCreated = false;
+        let quoteData: EstimateQuote | undefined;
+        let questionsData: FollowUpQuestion[] | undefined;
+        let responseKind: 'quote' | 'questions' | 'message' | undefined;
+        // Intermediate workflow events (node/identified) shown in the thinking dropdown.
+        const trace: ThinkingStep[] = [];
+
+        thinkingStartedAtRef.current = Date.now();
+        setIsThinking(true);
+
+        // Add or update a trace step (keyed by id).
+        const upsertStep = (id: string, label: string, patch: Partial<ThinkingStep> = {}) => {
+          const existing = trace.find((s) => s.id === id);
+          if (existing) {
+            existing.label = label;
+            if (patch.detail !== undefined) existing.detail = patch.detail;
+            if (patch.status) existing.status = patch.status;
+          } else {
+            trace.push({ id, label, status: 'active', ...patch });
+          }
+        };
+
+        // Build metadata with only the keys we actually have (avoid clobbering on updates).
+        const buildMeta = (): NonNullable<Message['metadata']> => {
+          const meta: NonNullable<Message['metadata']> = { mode: 'estimate' };
+          if (responseKind) meta.responseKind = responseKind;
+          if (quoteData) meta.quote = quoteData;
+          if (questionsData) meta.questions = questionsData;
+          if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
+          return meta;
+        };
+
+        // Tolerant extraction of the follow-up questions array across payload shapes.
+        const extractQuestions = (ev: any): FollowUpQuestion[] | undefined => {
+          const d = ev?.data;
+          if (Array.isArray(d)) return d;
+          if (Array.isArray(d?.questions)) return d.questions;
+          if (Array.isArray(ev?.questions)) return ev.questions;
+          if (Array.isArray(d?.data?.questions)) return d.data.questions;
+          return undefined;
+        };
+
+        // Create the assistant bubble on first content, or update it as quote/questions arrive.
+        const upsertAssistant = () => {
+          const creating = !messageCreated;
+          if (creating) {
+            messageCreated = true;
+            const start = thinkingStartedAtRef.current ?? Date.now();
+            const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+            setIsThinking(false);
+            streamingMessageIdRef.current = aiMessageId;
+            setStreamingMessageId(aiMessageId);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: aiMessageId,
+                role: 'assistant',
+                content: assistantContent,
+                timestamp: new Date(),
+                attachments: [],
+                thoughtDurationSeconds: thoughtSecs,
+                metadata: buildMeta(),
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? { ...msg, content: assistantContent, metadata: { ...msg.metadata, ...buildMeta() } }
+                  : msg
+              )
+            );
+          }
+        };
+
+        await copilotChatService.streamEstimate({
+          conversationId: convId,
+          content: hasContent ? content : undefined,
+          imageBase64,
+          imageMimeType,
+          senderId: user?.id ? String(user.id) : undefined,
+          onEvent: (event) => {
+            if (__DEV__) {
+              // Diagnostic: capture the real estimate event shapes (remove once confirmed).
+              console.log('[Estimate evt]', event.type, JSON.stringify(event.data ?? event.content ?? event));
+            }
+            if (event.type === 'user_message' && event.data) {
+              const confirmedUserMsg = mapCopilotMessageToUi(event.data);
+              setMessages((prev) =>
+                prev.map((msg) => (msg.id === tempUserMessage.id ? confirmedUserMsg : msg))
+              );
+            } else if (event.type === 'thinking') {
+              setIsThinking(true);
+            } else if (event.type === 'node' && event.node) {
+              const labels: Record<string, string> = {
+                identify: 'Identifying equipment',
+                build_quote: 'Building quote',
+                ask_questions: 'Preparing follow-up questions',
+              };
+              upsertStep(event.node, labels[event.node] ?? event.node, {
+                status: event.phase === 'end' ? 'done' : 'active',
+              });
+              upsertAssistant();
+            } else if (event.type === 'identified') {
+              const eq = event.data as unknown as IdentifiedEquipment | null;
+              const detail =
+                eq && (eq.brand || eq.model)
+                  ? `${[eq.brand, eq.model].filter(Boolean).join(' ')}${
+                      eq.confidence != null ? ` · ${Math.round(eq.confidence * 100)}%` : ''
+                    }`
+                  : 'No confident match';
+              upsertStep('identify', 'Identifying equipment', { detail });
+              upsertAssistant();
+            } else if (event.type === 'message' && event.content) {
+              // New model: the full chat-bubble text arrives once (no token streaming).
+              assistantContent = event.content;
+              upsertAssistant();
+              addToQueue(event.content);
+            } else if (event.type === 'chunk' && event.content) {
+              // Legacy fallback: append streamed tokens if an older backend still sends them.
+              assistantContent += event.content;
+              upsertAssistant();
+              addToQueue(event.content);
+            } else if (event.type === 'quote' && event.data) {
+              // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
+              quoteData = event.data as unknown as EstimateQuote;
+              upsertAssistant();
+            } else if (event.type === 'questions') {
+              questionsData = extractQuestions(event);
+              upsertAssistant();
+            } else if (event.type === 'done') {
+              flush();
+              responseKind = event.responseKind ?? responseKind;
+              const finalAi = event.data ? mapCopilotMessageToUi(event.data) : undefined;
+              const serverMeta = (finalAi?.metadata ?? {}) as NonNullable<Message['metadata']>;
+              const finalMeta: NonNullable<Message['metadata']> = {
+                mode: 'estimate',
+                responseKind: responseKind ?? serverMeta.responseKind,
+              };
+              const quote = quoteData ?? serverMeta.quote;
+              const questions = questionsData ?? serverMeta.questions;
+              const requiresSignature = event.requiresSignature ?? serverMeta.requiresSignature;
+              if (quote) finalMeta.quote = quote;
+              if (questions) finalMeta.questions = questions;
+              if (requiresSignature) finalMeta.requiresSignature = true;
+              // Preserve a previously-signed PDF if the message is re-hydrated/updated.
+              if (serverMeta.quotePdf) finalMeta.quotePdf = serverMeta.quotePdf;
+              trace.forEach((s) => {
+                if (s.status === 'active') s.status = 'done';
+              });
+              const finalTrace = trace.length ? trace.map((s) => ({ ...s })) : serverMeta.thinkingTrace;
+              if (finalTrace?.length) finalMeta.thinkingTrace = finalTrace;
+
+              const creating = !messageCreated;
+              if (creating) {
+                messageCreated = true;
+                const start = thinkingStartedAtRef.current ?? Date.now();
+                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                setIsThinking(false);
+                streamingMessageIdRef.current = aiMessageId;
+                setStreamingMessageId(aiMessageId);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: finalAi?.id || aiMessageId,
+                    role: 'assistant',
+                    content: finalAi?.content ?? assistantContent,
+                    timestamp: finalAi?.timestamp ?? new Date(),
+                    attachments: finalAi?.attachments ?? [],
+                    thoughtDurationSeconds: thoughtSecs,
+                    metadata: finalMeta,
+                  },
+                ]);
+              } else {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? {
+                          ...msg,
+                          id: finalAi?.id || aiMessageId,
+                          content: finalAi?.content ?? msg.content,
+                          metadata: finalMeta,
+                        }
+                      : msg
+                  )
+                );
+              }
+            } else if (event.type === 'error') {
+              console.warn('[AskAI] Estimate stream error:', event.error);
+              setIsThinking(false);
+              stopTTS();
+            }
+          },
+        });
+      } catch (err) {
+        console.warn('[AskAI] Estimate send failed', err);
+        stopTTS();
+        setIsThinking(false);
+      } finally {
+        setIsLoading(false);
+        setIsThinking(false);
+        setStreamingMessageId(null);
+        streamingMessageIdRef.current = null;
+        thinkingStartedAtRef.current = null;
+      }
+    },
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
+  );
+
+  // Estimate Cost follow-up: tapping an option (or submitting "Other") re-sends the
+  // chosen value to the estimate endpoint in the same conversation.
+  const handleAnswerQuestion = useCallback(
+    (value: string) => {
+      void handleSendEstimate(value);
+    },
+    [handleSendEstimate]
+  );
+
+  // Share/Save: download the attachment PDF to a local file and present the iOS share sheet.
+  // (The inline preview renders the remote URL directly; this is only for the explicit Share action.)
+  const openPdfInApp = useCallback(async (downloadUrl: string, filename?: string) => {
+    if (isOpeningPdfRef.current) return;
+    isOpeningPdfRef.current = true;
+    try {
+      const safeName = (filename || 'Estimate.pdf').replace(/[^\w.\-]+/g, '_');
+      const localUri = `${cacheDirectory ?? ''}${safeName}`;
+      const { uri } = await downloadAsync(downloadUrl, localUri);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: safeName,
+        });
+      }
+    } catch (err) {
+      console.warn('[AskAI] Failed to share quotation PDF', err);
+    } finally {
+      isOpeningPdfRef.current = false;
+    }
+  }, []);
+
+  // Estimate Cost: open the inline PDF preview (WebView loads …/pdf?inline=1 directly — no download).
+  // previewUrl renders in the WebView; downloadUrl (permanent attachment endpoint) backs Share/Save.
+  const handleDownloadPdf = useCallback(
+    async (message: Message) => {
+      const convId = conversationId ?? (await ensureConversation());
+      if (!convId || !message.id) {
+        console.warn('[AskAI] No conversation/message id for PDF preview');
+        return;
+      }
+      const previewUrl = copilotChatService.estimatePdfUrl({
+        conversationId: convId,
+        messageId: message.id,
+        inline: true,
+      });
+      const downloadUrl =
+        message.metadata?.quotePdf?.url ??
+        copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: message.id });
+      setPdfPreview({ previewUrl, downloadUrl, filename: message.metadata?.quotePdf?.filename });
+    },
+    [conversationId, ensureConversation]
+  );
+
+  // Estimate Cost: open the signature pad for a quote message.
+  const handleSignDocument = useCallback((message: Message) => {
+    setSigningMessage(message);
+  }, []);
+
+  // Estimate Cost: open the email modal for a signed quote (prefill comes from quote.suggestedCustomerEmail).
+  const handleEmailDocument = useCallback((message: Message) => {
+    setEmailError(null);
+    setEmailingMessage(message);
+  }, []);
+
+  // Estimate Cost: POST the confirmed customer email → server attaches the signed PDF + sends.
+  const handleSendEmail = useCallback(
+    async (to: string) => {
+      const target = emailingMessage;
+      if (!target || isEmailing) return;
+      setIsEmailing(true);
+      setEmailError(null);
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        if (!convId) {
+          setEmailError('No conversation available.');
+          return;
+        }
+        const result = await copilotChatService.sendEstimateEmail({
+          conversationId: convId,
+          messageId: target.id,
+          to,
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === target.id && msg.metadata?.quote
+              ? {
+                  ...msg,
+                  metadata: {
+                    ...msg.metadata,
+                    quote: {
+                      ...msg.metadata.quote,
+                      emailedTo: result.to ?? to,
+                      emailedAt: result.sentAt ?? new Date().toISOString(),
+                    },
+                  },
+                }
+              : msg
+          )
+        );
+        setEmailingMessage(null);
+      } catch (err) {
+        console.warn('[AskAI] Failed to email estimate', err);
+        setEmailError(err instanceof Error ? err.message : 'Failed to send email. Try again.');
+      } finally {
+        setIsEmailing(false);
+      }
+    },
+    [emailingMessage, isEmailing, conversationId, ensureConversation]
+  );
+
+  // Open the signed PDF queued during signing. Captures-and-clears the ref so whichever of
+  // onDismiss / the timeout safety-net fires first wins and the other is a no-op.
+  const openPendingPdf = useCallback(() => {
+    const pending = pendingPdfRef.current;
+    if (!pending) return;
+    pendingPdfRef.current = null;
+    setPdfPreview(pending);
+  }, []);
+
+  // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
+  // on the message (so the card flips to "Download PDF"), then open the PDF.
+  const handleSubmitSignature = useCallback(
+    async (signatureBase64: string, signerName: string) => {
+      const target = signingMessage;
+      if (!target || isSigning) return;
+      setIsSigning(true);
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        if (!convId) {
+          console.warn('[AskAI] No conversation ID, cannot sign');
+          return;
+        }
+        const result = await copilotChatService.signEstimate({
+          conversationId: convId,
+          messageId: target.id,
+          signatureBase64,
+          signerName,
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === target.id
+              ? {
+                  ...msg,
+                  metadata: {
+                    ...msg.metadata,
+                    requiresSignature: false,
+                    quote: msg.metadata?.quote
+                      ? {
+                          ...msg.metadata.quote,
+                          signed: true,
+                          signedAt: result.signedAt,
+                          signerName,
+                          pdfKey: result.key ?? msg.metadata.quote.pdfKey,
+                          estimateNumber: result.estimateNumber ?? msg.metadata.quote.estimateNumber,
+                          suggestedCustomerEmail: result.suggestedCustomerEmail ?? msg.metadata.quote.suggestedCustomerEmail,
+                        }
+                      : msg.metadata?.quote,
+                    quotePdf: {
+                      url: result.url,
+                      key: result.key,
+                      filename: result.filename,
+                      estimateNumber: result.estimateNumber,
+                      signedAt: result.signedAt,
+                    },
+                  },
+                }
+              : msg
+          )
+        );
+        // Queue the inline preview and close the pad. Opening it is deferred until the modal has
+        // fully dismissed (via onDismiss / the timeout) to avoid an iOS present-while-dismissing freeze.
+        pendingPdfRef.current = {
+          previewUrl: copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: target.id, inline: true }),
+          downloadUrl: result.url,
+          filename: result.filename,
+        };
+        setSigningMessage(null);
+        setTimeout(openPendingPdf, 350);
+      } catch (err) {
+        console.warn('[AskAI] Failed to sign estimate', err);
+      } finally {
+        setIsSigning(false);
+      }
+    },
+    [signingMessage, isSigning, conversationId, ensureConversation, openPendingPdf]
+  );
+
+  /**
    * Main message handler - supports text, voice, and images
-   * 
+   *
    * Flow:
    * 1. Images: Upload → Create user message → Stream AI response
    * 2. Text/Voice: Create optimistic message → Stream AI response
-   * 
+   *
    * Streaming uses XMLHttpRequest for React Native compatibility
    */
   const handleSendMessage = useCallback(
     async (content: string, _type: 'text' | 'voice' | 'image') => {
+      // Estimate Cost mode routes to the dedicated estimate endpoint.
+      if (estimateMode) {
+        await handleSendEstimate(content);
+        return;
+      }
+
       const hasContent = content.trim().length > 0;
       const hasImages = pendingImages.length > 0;
       if (!isAllowed || (!hasContent && !hasImages)) return;
@@ -680,7 +1176,7 @@ export const AskAITab: React.FC = () => {
         thinkingStartedAtRef.current = null;
       }
     },
-    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS, estimateMode, handleSendEstimate]
   );
 
   // Handle image selection (from camera or gallery)
@@ -689,6 +1185,7 @@ export const AskAITab: React.FC = () => {
     const newImage: PendingImage = {
       id: `img-${Date.now()}`,
       uri: asset.uri,
+      type: asset.type,
       isUploading: false,
     };
     setPendingImages((prev) => [...prev, newImage]);
@@ -875,9 +1372,13 @@ export const AskAITab: React.FC = () => {
       <ChatMessage
         message={item}
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
+        onAnswerQuestion={handleAnswerQuestion}
+        onDownloadPdf={handleDownloadPdf}
+        onSignDocument={handleSignDocument}
+        onEmailDocument={handleEmailDocument}
       />
     ),
-    [streamingMessageId]
+    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument, handleEmailDocument]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -969,9 +1470,36 @@ export const AskAITab: React.FC = () => {
           isUploadingImages={isUploadingImages}
           onStopSpeaking={handleStopSpeaking}
           disabled={!canUseAskAI}
+          estimateMode={estimateMode}
+          onToggleEstimateMode={() => setEstimateMode((v) => !v)}
         />
       </View>
       </View>
+      <SignaturePad
+        visible={!!signingMessage}
+        submitting={isSigning}
+        onCancel={() => setSigningMessage(null)}
+        onSubmit={handleSubmitSignature}
+        onDismiss={openPendingPdf}
+      />
+      <PdfPreview
+        visible={!!pdfPreview}
+        url={pdfPreview?.previewUrl ?? null}
+        filename={pdfPreview?.filename}
+        onClose={() => setPdfPreview(null)}
+        onShare={pdfPreview ? () => openPdfInApp(pdfPreview.downloadUrl, pdfPreview.filename) : undefined}
+      />
+      <EmailModal
+        visible={!!emailingMessage}
+        suggestedEmail={emailingMessage?.metadata?.quote?.suggestedCustomerEmail}
+        sending={isEmailing}
+        error={emailError}
+        onCancel={() => {
+          setEmailingMessage(null);
+          setEmailError(null);
+        }}
+        onSend={handleSendEmail}
+      />
     </SafeAreaView>
   );
 };

@@ -7,6 +7,9 @@ import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
+import { QuoteCard } from '@/components/chat/QuoteCard';
+import { QuestionsCard } from '@/components/chat/QuestionsCard';
+import { ThinkingTrace } from '@/components/chat/ThinkingTrace';
 import type { Message } from '@/components/chat/types';
 
 interface MessageAttachment {
@@ -22,11 +25,23 @@ interface ChatMessageProps {
   message: Message;
   /** True while tokens are still streaming for this message */
   isStreaming?: boolean;
+  /** Estimate Cost follow-up answer: sends the chosen option value back to the endpoint. */
+  onAnswerQuestion?: (value: string) => void;
+  /** Estimate Cost: download/open the generated quotation PDF for this message. */
+  onDownloadPdf?: (message: Message) => void | Promise<void>;
+  /** Estimate Cost: open the signature pad to confirm this quote. */
+  onSignDocument?: (message: Message) => void;
+  /** Estimate Cost: email the signed PDF to the customer. */
+  onEmailDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument, onEmailDocument }) => {
   const { colors } = useTheme();
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
+  // Estimate quote signing state: signed once a PDF exists; needs a signature when `done` flagged it.
+  const isSigned = !!(message.metadata?.quote?.signed || message.metadata?.quotePdf?.url);
+  const needsSignature = !!message.metadata?.requiresSignature;
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set());
@@ -263,7 +278,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
         />
       </View>
       <View style={[styles.messageContent, !isAssistant && styles.userMessageContent]}>
-        {isAssistant &&
+        {isAssistant && message.metadata?.thinkingTrace?.length ? (
+          <ThinkingTrace
+            steps={message.metadata.thinkingTrace}
+            active={isStreaming}
+            durationSeconds={message.thoughtDurationSeconds}
+          />
+        ) : (
+          isAssistant &&
           message.thoughtDurationSeconds != null &&
           !isChecklistUpdate &&
           !isProactiveSuggestion && (
@@ -273,7 +295,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                 Thought for {message.thoughtDurationSeconds}s
               </ThemedText>
             </View>
-          )}
+          )
+        )}
+        {(!!message.content || (isImageMessage && imageAttachments.length > 0)) && (
         <View
           style={[
             styles.bubble,
@@ -334,6 +358,37 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             </Markdown>
           ) : null}
         </View>
+        )}
+        {isAssistant && message.metadata?.quote ? (
+          <QuoteCard
+            quote={message.metadata.quote}
+            downloadingPdf={downloadingPdf}
+            onDownloadPdf={
+              onDownloadPdf && isSigned
+                ? async () => {
+                    setDownloadingPdf(true);
+                    try {
+                      await onDownloadPdf(message);
+                    } finally {
+                      setDownloadingPdf(false);
+                    }
+                  }
+                : undefined
+            }
+            onSign={
+              !isSigned && needsSignature && onSignDocument
+                ? () => onSignDocument(message)
+                : undefined
+            }
+            onEmail={
+              isSigned && onEmailDocument ? () => onEmailDocument(message) : undefined
+            }
+            emailedTo={message.metadata?.quote?.emailedTo}
+          />
+        ) : null}
+        {isAssistant && message.metadata?.questions?.length ? (
+          <QuestionsCard questions={message.metadata.questions} onAnswer={onAnswerQuestion} />
+        ) : null}
         <ThemedText
           style={[
             styles.timestamp,

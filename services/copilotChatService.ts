@@ -36,10 +36,33 @@ export interface AudioUploadResponse {
 }
 
 export interface StreamEvent {
-  type: 'user_message' | 'thinking' | 'chunk' | 'tool_call' | 'error' | 'done';
+  type:
+    | 'user_message'
+    | 'thinking'
+    | 'chunk'
+    | 'message'
+    | 'tool_call'
+    | 'node'
+    | 'identified'
+    | 'quote'
+    | 'questions'
+    | 'error'
+    | 'done';
   content?: string;
   error?: string;
   tool?: any;
+  /** Estimate workflow `node` event: graph step name + lifecycle phase. */
+  node?: string;
+  phase?: 'start' | 'end';
+  /** On the estimate `done` event: what the turn produced. */
+  responseKind?: 'quote' | 'questions' | 'message';
+  /** On the estimate `done` event: true on a quote turn — collect a signature, then POST …/sign. */
+  requiresSignature?: boolean;
+  /**
+   * `CopilotMessage` for user_message/done. The estimate `quote`/`questions` events also
+   * arrive here (an `EstimateQuote` / `{ questions: FollowUpQuestion[] }`); the estimate
+   * handler casts as needed.
+   */
   data?: CopilotMessage;
 }
 
@@ -61,7 +84,7 @@ const getDeviceTimezone = (): string | undefined => {
 
 const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const headers: HeadersShape = {};
-  if (asJson) headers['Content-Type'] = 'application/json';
+  if (asJson) headers['Content-Type'] = 'application/pdf';
 
   const { access_token } = useAuthStore.getState();
   if (access_token) {
@@ -414,6 +437,179 @@ export const copilotChatService = {
         senderId: params.senderId,
       }));
     });
+  },
+
+  /**
+   * Estimate Cost (demo) — streams a markdown estimate plus a structured `quote` event.
+   * Self-contained endpoint; same SSE-over-POST framing as streamMessage.
+   * At least one of `content`, `imageUrl`, or `imageBase64` must be provided.
+   * `imageBase64` must NOT include a `data:` prefix.
+   */
+  async streamEstimate(params: {
+    conversationId: string;
+    content?: string;
+    imageUrl?: string;
+    imageBase64?: string;
+    imageMimeType?: string;
+    senderId?: string;
+    signal?: AbortSignal;
+    onEvent: (event: StreamEvent) => void;
+  }): Promise<void> {
+    const url = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/stream`;
+    if (__DEV__) {
+      console.log('[StreamEstimate] Starting stream to:', url);
+    }
+
+    // Use XMLHttpRequest for React Native compatibility (supports progressive streaming)
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.open('POST', url, true);
+
+      const headers = buildHeaders(true);
+      Object.entries(headers).forEach(([key, value]) => {
+        xhr.setRequestHeader(key, value);
+      });
+
+      let buffer = '';
+      let processedLength = 0;
+
+      const processPayload = (payload: string) => {
+        if (!payload || payload === '[DONE]') {
+          if (payload === '[DONE]') params.onEvent({ type: 'done' });
+          return;
+        }
+        try {
+          const rawEvt = JSON.parse(payload);
+          params.onEvent(this.normalizeEvent(rawEvt));
+        } catch (err) {
+          if (__DEV__) {
+            console.warn('[StreamEstimate] Failed to parse SSE payload:', payload, err);
+          }
+        }
+      };
+
+      xhr.onprogress = () => {
+        const responseText = xhr.responseText;
+        const newData = responseText.substring(processedLength);
+        processedLength = responseText.length;
+
+        buffer += newData;
+
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(':')) continue;
+          if (!trimmed.startsWith('data:')) continue;
+          processPayload(trimmed.slice(5).trim());
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const trimmed = buffer.trim();
+          if (trimmed.startsWith('data:')) {
+            processPayload(trimmed.slice(5).trim());
+          }
+          if (__DEV__) {
+            console.log('[StreamEstimate] Stream completed successfully');
+          }
+          resolve();
+        } else {
+          reject(new Error(`Estimate stream failed (${xhr.status})`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Estimate stream request failed'));
+      xhr.ontimeout = () => reject(new Error('Estimate stream request timed out'));
+
+      if (params.signal) {
+        params.signal.addEventListener('abort', () => {
+          xhr.abort();
+          reject(new Error('Estimate stream aborted'));
+        });
+      }
+
+      xhr.send(
+        JSON.stringify({
+          content: params.content,
+          imageUrl: params.imageUrl,
+          imageBase64: params.imageBase64,
+          imageMimeType: params.imageMimeType,
+          senderId: params.senderId,
+        })
+      );
+    });
+  },
+
+  /**
+   * Confirm the estimate with the customer's signature → generates the signed PDF.
+   *   POST /copilot/:conversationId/estimate/:messageId/sign
+   * `signatureBase64` is the canvas PNG data URL (raw base64 also accepted). Returns the
+   * downloadable PDF metadata. Throws on 400 (empty signature) / 404 / 409 (not a quote turn).
+   */
+  async signEstimate(params: {
+    conversationId: string;
+    messageId: string;
+    signatureBase64: string;
+    signerName?: string;
+  }): Promise<{ url: string; directUrl?: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string; suggestedCustomerEmail?: string | null }> {
+    const res = await fetch(
+      `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/sign`,
+      {
+        method: 'POST',
+        headers: buildHeaders(true),
+        body: JSON.stringify({
+          signatureBase64: params.signatureBase64,
+          signatureMimeType: 'image/png',
+          signerName: params.signerName,
+        }),
+      }
+    );
+    const json = await handleJsonResponse<{ success?: boolean; data?: any }>(res);
+    const data = json?.data ?? json;
+    if (!data?.url) {
+      throw new Error('Sign response missing PDF url');
+    }
+    return data;
+  },
+
+  /**
+   * Email the signed estimate PDF to the customer (call after signing + confirming the address).
+   *   POST /copilot/:conversationId/estimate/:messageId/email  body { to }
+   * The signed PDF is attached server-side. Throws (via handleJsonResponse) on 400 (invalid email),
+   * 404 (message not found), 409 (not a quote turn / not signed yet), 503 (email not configured).
+   */
+  async sendEstimateEmail(params: {
+    conversationId: string;
+    messageId: string;
+    to: string;
+  }): Promise<{ to: string; from?: string; cc?: string | null; sentAt?: string }> {
+    const res = await fetch(
+      `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/email`,
+      {
+        method: 'POST',
+        headers: buildHeaders(true),
+        body: JSON.stringify({ to: params.to }),
+      }
+    );
+    const json = await handleJsonResponse<{ success?: boolean; data?: any }>(res);
+    return json?.data ?? json;
+  },
+
+  /**
+   * Build the permanent PDF endpoint URL for a signed quote (no network — the endpoint streams the
+   * PDF straight from S3 and never expires):
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf            → downloadable (attachment)
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf?inline=1   → renders in-browser (inline)
+   * Use `inline: true` for the WebView preview; omit for Download/Share. The estimate API is public,
+   * so the URL can be loaded directly with no auth header.
+   */
+  estimatePdfUrl(params: { conversationId: string; messageId: string; inline?: boolean }): string {
+    const base = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/pdf`;
+    return params.inline ? `${base}?inline=1` : base;
   },
 
   normalizeEvent(rawEvt: any): StreamEvent {
