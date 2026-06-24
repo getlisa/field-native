@@ -84,7 +84,7 @@ const getDeviceTimezone = (): string | undefined => {
 
 const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const headers: HeadersShape = {};
-  if (asJson) headers['Content-Type'] = 'application/json';
+  if (asJson) headers['Content-Type'] = 'application/pdf';
 
   const { access_token } = useAuthStore.getState();
   if (access_token) {
@@ -555,7 +555,7 @@ export const copilotChatService = {
     messageId: string;
     signatureBase64: string;
     signerName?: string;
-  }): Promise<{ url: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string; suggestedCustomerEmail?: string | null }> {
+  }): Promise<{ url: string; directUrl?: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string; suggestedCustomerEmail?: string | null }> {
     const res = await fetch(
       `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/sign`,
       {
@@ -600,41 +600,16 @@ export const copilotChatService = {
   },
 
   /**
-   * Resolve a downloadable URL for a signed quote's PDF via the durable re-download endpoint:
-   *   GET /copilot/:conversationId/estimate/:messageId/pdf → 302 to the PDF (permanent CloudFront
-   *   URL in prod, or a fresh presigned URL otherwise — never a stale link).
-   * Returns null on 404 (no such message) or 409 (not signed yet) or any error, so callers
-   * can fall back to a stored URL.
+   * Build the permanent PDF endpoint URL for a signed quote (no network — the endpoint streams the
+   * PDF straight from S3 and never expires):
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf            → downloadable (attachment)
+   *   GET /copilot/:conversationId/estimate/:messageId/pdf?inline=1   → renders in-browser (inline)
+   * Use `inline: true` for the WebView preview; omit for Download/Share. The estimate API is public,
+   * so the URL can be loaded directly with no auth header.
    */
-  async getEstimatePdfUrl(params: {
-    conversationId: string;
-    messageId: string;
-  }): Promise<string | null> {
-    const endpoint = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/pdf`;
-    // Follow the redirect and read the final URL. `redirect: 'manual'` is unreliable in RN
-    // (can hang), so we follow and use Response.url (set to the resolved presigned S3 link on
-    // iOS). Guard with an AbortController timeout so this can never hang the caller.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetch(endpoint, {
-        method: 'GET',
-        headers: buildHeaders(false),
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-      // 404 = no such message; 409 = not signed yet → nothing to download.
-      if (res.status === 404 || res.status === 409) return null;
-      if (res.ok && res.url && res.url !== endpoint) return res.url;
-      return null;
-    } catch (err) {
-      if (__DEV__) {
-        console.warn('[getEstimatePdfUrl] Failed to resolve PDF URL:', err);
-      }
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
+  estimatePdfUrl(params: { conversationId: string; messageId: string; inline?: boolean }): string {
+    const base = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/pdf`;
+    return params.inline ? `${base}?inline=1` : base;
   },
 
   normalizeEvent(rawEvt: any): StreamEvent {
