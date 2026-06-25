@@ -84,7 +84,7 @@ const getDeviceTimezone = (): string | undefined => {
 
 const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const headers: HeadersShape = {};
-  if (asJson) headers['Content-Type'] = 'application/pdf';
+  if (asJson) headers['Content-Type'] = 'application/json';
 
   const { access_token } = useAuthStore.getState();
   if (access_token) {
@@ -140,6 +140,7 @@ export const copilotChatService = {
     members?: string[];
     metadata?: Record<string, any>;
   }): Promise<ConversationResponse> {
+    console.log('[createConversation] Creating conversation for params:', params);
     const res = await fetch(`${COPILOT_API_BASE}/conversations`, {
       method: 'POST',
       headers: buildHeaders(true),
