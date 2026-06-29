@@ -84,9 +84,13 @@ interface MultiModalInputProps {
   isUploadingImages?: boolean;
   onStopSpeaking?: () => void;
   disabled?: boolean;
-  /** Estimate Cost demo mode toggle state. */
+  /** Estimate mode toggle — when on, forces `mode: 'estimate'` on the unified copilot stream. */
   estimateMode?: boolean;
   onToggleEstimateMode?: () => void;
+  /** True while an AI response is streaming — swaps the Send button for a Stop button. */
+  streaming?: boolean;
+  /** Abort the in-flight stream (wired to the Stop button). */
+  onStopGenerating?: () => void;
 }
 
 export const MultiModalInput: React.FC<MultiModalInputProps> = ({
@@ -106,6 +110,8 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   disabled = false,
   estimateMode = false,
   onToggleEstimateMode,
+  streaming = false,
+  onStopGenerating,
 }) => {
   const { colors } = useTheme();
   const [textInput, setTextInput] = useState('');
@@ -1197,21 +1203,31 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
           editable={!isLoading && !isUploadingImages && !disabled}
           style={[styles.textInput, { color: colors.text }]}
         />
-        <Pressable
-          style={[
-            styles.inlineSendButton,
-            { backgroundColor: canSend ? colors.primary : colors.backgroundTertiary },
-          ]}
-          onPress={handleSend}
-          disabled={!canSend}
-          accessibilityRole="button"
-          accessibilityLabel="Send message">
-          {isUploadingImages ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <Ionicons name="send" size={18} color={canSend ? '#ffffff' : colors.textTertiary} />
-          )}
-        </Pressable>
+        {streaming && onStopGenerating ? (
+          <Pressable
+            style={[styles.inlineSendButton, { backgroundColor: colors.primary }]}
+            onPress={onStopGenerating}
+            accessibilityRole="button"
+            accessibilityLabel="Stop generating">
+            <Ionicons name="stop" size={16} color="#ffffff" />
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[
+              styles.inlineSendButton,
+              { backgroundColor: canSend ? colors.primary : colors.backgroundTertiary },
+            ]}
+            onPress={handleSend}
+            disabled={!canSend}
+            accessibilityRole="button"
+            accessibilityLabel="Send message">
+            {isUploadingImages ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Ionicons name="send" size={18} color={canSend ? '#ffffff' : colors.textTertiary} />
+            )}
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.actionsRow}>

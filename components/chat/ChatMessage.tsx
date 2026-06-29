@@ -7,8 +7,13 @@ import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
+import { ActionsCard } from '@/components/chat/ActionsCard';
+import { CitationsCard } from '@/components/chat/CitationsCard';
+import { FollowUpChips } from '@/components/chat/FollowUpChips';
+import { IdentifiedCard } from '@/components/chat/IdentifiedCard';
 import { QuoteCard } from '@/components/chat/QuoteCard';
 import { QuestionsCard } from '@/components/chat/QuestionsCard';
+import { SourcesCard } from '@/components/chat/SourcesCard';
 import { ThinkingTrace } from '@/components/chat/ThinkingTrace';
 import type { Message } from '@/components/chat/types';
 
@@ -25,26 +30,58 @@ interface ChatMessageProps {
   message: Message;
   /** True while tokens are still streaming for this message */
   isStreaming?: boolean;
-  /** Estimate Cost follow-up answer: sends the chosen option value back to the endpoint. */
+  /** True when this is the latest AI message (controls followUps visibility) */
+  isLatestAiMessage?: boolean;
+  /** Follow-up answer: sends the chosen option value back to the endpoint. */
   onAnswerQuestion?: (value: string) => void;
-  /** Estimate Cost: download/open the generated quotation PDF for this message. */
+  /** Follow-up chip tapped: sends the chip prompt as a new turn. */
+  onFollowUpPress?: (prompt: string) => void;
+  /** Download/open the generated quotation PDF for this message. */
   onDownloadPdf?: (message: Message) => void | Promise<void>;
-  /** Estimate Cost: open the signature pad to confirm this quote. */
+  /** Open the signature pad to confirm this quote. */
   onSignDocument?: (message: Message) => void;
-  /** Estimate Cost: email the signed PDF to the customer. */
+  /** Email the signed PDF to the customer. */
   onEmailDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument, onEmailDocument }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({
+  message,
+  isStreaming = false,
+  isLatestAiMessage = false,
+  onAnswerQuestion,
+  onFollowUpPress,
+  onDownloadPdf,
+  onSignDocument,
+  onEmailDocument,
+}) => {
   const { colors } = useTheme();
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
-  // Estimate quote signing state: signed once a PDF exists; needs a signature when `done` flagged it.
   const isSigned = !!(message.metadata?.quote?.signed || message.metadata?.quotePdf?.url);
   const needsSignature = !!message.metadata?.requiresSignature;
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set());
+
+  // Use the backend-provided `actions` block when present. Otherwise, synthesize the
+  // estimate lifecycle actions from the quote state so signing/email/download still work
+  // even if the backend didn't emit an `actions` block.
+  const effectiveActions = useMemo(() => {
+    if (message.metadata?.actions?.length) return message.metadata.actions;
+    if (!message.metadata?.quote) return undefined;
+    if (isSigned) {
+      return [
+        { id: 'download_pdf', label: 'Download', actionType: 'download_pdf', endpoint: '', method: 'GET', style: 'primary' },
+        { id: 'email_estimate', label: 'Send email', actionType: 'email_estimate', endpoint: '', method: 'POST', style: 'secondary' },
+      ] as typeof message.metadata.actions;
+    }
+    if (needsSignature) {
+      return [
+        { id: 'sign_estimate', label: 'Sign the document', actionType: 'sign_estimate', endpoint: '', method: 'POST', style: 'primary' },
+      ] as typeof message.metadata.actions;
+    }
+    return undefined;
+  }, [message.metadata?.actions, message.metadata?.quote, isSigned, needsSignature]);
 
   const isChecklistUpdate = message.metadata?.type === 'checklist_update';
   const isProactiveSuggestion = message.metadata?.type === 'proactive_suggestion';
@@ -321,6 +358,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
         )}
         {(!!message.content || (isImageMessage && imageAttachments.length > 0)) && (
         <View
+          accessibilityLiveRegion={isStreaming && isAssistant ? 'polite' : 'none'}
           style={[
             styles.bubble,
             isAssistant ? assistantBubbleStyle : userBubbleStyle,
@@ -382,12 +420,32 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
           ) : null}
         </View>
         )}
+        {isAssistant && message.metadata?.identifiedEquipment ? (
+          <IdentifiedCard data={message.metadata.identifiedEquipment} />
+        ) : null}
         {isAssistant && message.metadata?.quote ? (
-          <QuoteCard
-            quote={message.metadata.quote}
-            downloadingPdf={downloadingPdf}
+          <QuoteCard quote={message.metadata.quote} />
+        ) : null}
+        {isAssistant && message.metadata?.questions?.length ? (
+          <QuestionsCard questions={message.metadata.questions} onAnswer={onAnswerQuestion} />
+        ) : null}
+        {isAssistant && message.metadata?.citations?.length ? (
+          <CitationsCard items={message.metadata.citations} />
+        ) : null}
+        {isAssistant && message.metadata?.sources?.length ? (
+          <SourcesCard items={message.metadata.sources} />
+        ) : null}
+        {isAssistant && isLatestAiMessage && message.metadata?.followUps?.length && onFollowUpPress ? (
+          <FollowUpChips chips={message.metadata.followUps} onPress={onFollowUpPress} />
+        ) : null}
+        {isAssistant && effectiveActions?.length ? (
+          <ActionsCard
+            items={effectiveActions}
+            emailedTo={message.metadata?.quote?.emailedTo}
+            onSignEstimate={onSignDocument ? () => onSignDocument(message) : undefined}
+            onEmailEstimate={onEmailDocument ? () => onEmailDocument(message) : undefined}
             onDownloadPdf={
-              onDownloadPdf && isSigned
+              onDownloadPdf
                 ? async () => {
                     setDownloadingPdf(true);
                     try {
@@ -398,19 +456,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                   }
                 : undefined
             }
-            onSign={
-              !isSigned && needsSignature && onSignDocument
-                ? () => onSignDocument(message)
-                : undefined
-            }
-            onEmail={
-              isSigned && onEmailDocument ? () => onEmailDocument(message) : undefined
-            }
-            emailedTo={message.metadata?.quote?.emailedTo}
           />
-        ) : null}
-        {isAssistant && message.metadata?.questions?.length ? (
-          <QuestionsCard questions={message.metadata.questions} onAnswer={onAnswerQuestion} />
         ) : null}
         <ThemedText
           style={[

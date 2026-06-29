@@ -55,14 +55,26 @@ import { useStreamingTTS } from '@/hooks/useStreamingTTS';
 import { ExpoLiveAudio } from '@/native';
 import type { MediaAsset } from '@/lib/media';
 import type {
+  ActionItem,
+  CitationItem,
   EstimateQuote,
+  FollowUpChip,
   FollowUpQuestion,
-  IdentifiedEquipment,
+  Identification,
   Message,
   PendingImage,
+  SourceItem,
   ThinkingStep,
 } from '@/components/chat/types';
 import { api } from '@/lib/apiClient';
+
+// Conversation starter prompts shown in the empty state — tapping one starts a normal turn.
+const COPILOT_STARTERS = [
+  'What does this fault code mean?',
+  'How do I reset this device?',
+  'What would it cost to replace this unit?',
+  'What are the inspection steps for this asset?',
+];
 
 export const AskAITab: React.FC = () => {
   const { job, jobId, canUseAskAI, isRecording: isLiveTranscribing, isConnected: isTranscriptionConnected, pauseTranscription, resumeTranscription, setSwipeEnabled } = useJobDetailContext();
@@ -85,10 +97,10 @@ export const AskAITab: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
-  // Estimate Cost demo mode — sticky toggle in the chat bar. Routes the next send
-  // to the estimate endpoint instead of the normal copilot stream.
+  // Estimate mode — explicit toggle in the chat bar. When on, forces `mode: 'estimate'`
+  // on the unified copilot stream (the endpoint still auto-routes when this is off).
   const [estimateMode, setEstimateMode] = useState(false);
-  // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
+  // Signing: the quote message whose signature pad is open, + in-flight flag.
   const [signingMessage, setSigningMessage] = useState<Message | null>(null);
   const [isSigning, setIsSigning] = useState(false);
   // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
@@ -97,6 +109,8 @@ export const AskAITab: React.FC = () => {
   const [emailingMessage, setEmailingMessage] = useState<Message | null>(null);
   const [isEmailing, setIsEmailing] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
+  // Live step label shown in the "Thinking…" indicator (e.g. "Identifying equipment").
+  const [stepLabel, setStepLabel] = useState<string | null>(null);
 
   // Suspend tab-swipe while a signature pad / PDF preview / email modal is open (gestures stay put).
   useEffect(() => {
@@ -108,6 +122,8 @@ export const AskAITab: React.FC = () => {
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
+  // Aborts the in-flight copilot stream (Stop button + job-change + unmount).
+  const abortControllerRef = useRef<AbortController | null>(null);
   // Signed PDF to open once the signature modal has fully dismissed (avoids an iOS
   // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
   const pendingPdfRef = useRef<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
@@ -169,10 +185,13 @@ export const AskAITab: React.FC = () => {
   // Reset conversation and messages when jobId changes
   // This prevents showing messages from previous jobs
   useEffect(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     setConversationId(null);
     setMessages([]);
     setPendingImages([]);
     setIsThinking(false);
+    setStepLabel(null);
     setStreamingMessageId(null);
     streamingMessageIdRef.current = null;
     thinkingStartedAtRef.current = null;
@@ -182,6 +201,14 @@ export const AskAITab: React.FC = () => {
       console.log('[AskAI] Job changed - resetting conversation state for jobId:', jobId);
     }
   }, [jobId]);
+
+  // Abort any in-flight stream when the tab unmounts.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
 
   // Ensure conversation exists
   const ensureConversation = useCallback(async () => {
@@ -307,280 +334,6 @@ export const AskAITab: React.FC = () => {
    * 
    * Streaming uses XMLHttpRequest for React Native compatibility
    */
-  /**
-   * Estimate Cost (demo) handler.
-   *
-   * Routes to the self-contained estimate endpoint. Sends the (optional) note plus the
-   * captured photo as inline base64, streams the markdown estimate, and attaches the
-   * structured `quote` to the assistant message so ChatMessage can render the quote card.
-   */
-  const handleSendEstimate = useCallback(
-    async (content: string) => {
-      const hasContent = content.trim().length > 0;
-      const imagesForEstimate = pendingImages;
-      const hasImages = imagesForEstimate.length > 0;
-      if (!isAllowed || (!hasContent && !hasImages)) return;
-
-      // Optimistic user message (with the captured photo shown via its local uri)
-      const tempUserMessage: Message = {
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content,
-        timestamp: new Date(),
-        contentType: hasImages ? 'IMAGE' : 'TEXT',
-        attachments: imagesForEstimate.map((img) => ({
-          id: img.id,
-          fileName: img.name || '',
-          fileType: img.type || 'image/jpeg',
-          fileSize: 0,
-          url: img.uri,
-        })),
-      };
-      setMessages((prev) => [...prev, tempUserMessage]);
-      setIsLoading(true);
-      setPendingImages([]);
-
-      try {
-        const convId = await ensureConversation();
-        if (!convId) {
-          console.warn('[AskAI] No conversation ID, aborting estimate');
-          return;
-        }
-
-        // Read the captured photo to base64 (no data: prefix, per the endpoint contract)
-        let imageBase64: string | undefined;
-        let imageMimeType: string | undefined;
-        const firstImage = imagesForEstimate[0];
-        if (firstImage) {
-          try {
-            imageBase64 = await FileSystem.readAsStringAsync(firstImage.uri, {
-              encoding: 'base64',
-            });
-            imageMimeType = firstImage.type || 'image/jpeg';
-          } catch (readErr) {
-            console.warn('[AskAI] Failed to read estimate image for base64', readErr);
-          }
-        }
-
-        const aiMessageId = `ai-${Date.now()}`;
-        let assistantContent = '';
-        let messageCreated = false;
-        let quoteData: EstimateQuote | undefined;
-        let questionsData: FollowUpQuestion[] | undefined;
-        let responseKind: 'quote' | 'questions' | 'message' | undefined;
-        // Intermediate workflow events (node/identified) shown in the thinking dropdown.
-        const trace: ThinkingStep[] = [];
-
-        thinkingStartedAtRef.current = Date.now();
-        setIsThinking(true);
-
-        // Add or update a trace step (keyed by id).
-        const upsertStep = (id: string, label: string, patch: Partial<ThinkingStep> = {}) => {
-          const existing = trace.find((s) => s.id === id);
-          if (existing) {
-            existing.label = label;
-            if (patch.detail !== undefined) existing.detail = patch.detail;
-            if (patch.status) existing.status = patch.status;
-          } else {
-            trace.push({ id, label, status: 'active', ...patch });
-          }
-        };
-
-        // Build metadata with only the keys we actually have (avoid clobbering on updates).
-        const buildMeta = (): NonNullable<Message['metadata']> => {
-          const meta: NonNullable<Message['metadata']> = { mode: 'estimate' };
-          if (responseKind) meta.responseKind = responseKind;
-          if (quoteData) meta.quote = quoteData;
-          if (questionsData) meta.questions = questionsData;
-          if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
-          return meta;
-        };
-
-        // Tolerant extraction of the follow-up questions array across payload shapes.
-        const extractQuestions = (ev: any): FollowUpQuestion[] | undefined => {
-          const d = ev?.data;
-          if (Array.isArray(d)) return d;
-          if (Array.isArray(d?.questions)) return d.questions;
-          if (Array.isArray(ev?.questions)) return ev.questions;
-          if (Array.isArray(d?.data?.questions)) return d.data.questions;
-          return undefined;
-        };
-
-        // Create the assistant bubble on first content, or update it as quote/questions arrive.
-        const upsertAssistant = () => {
-          const creating = !messageCreated;
-          if (creating) {
-            messageCreated = true;
-            const start = thinkingStartedAtRef.current ?? Date.now();
-            const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-            setIsThinking(false);
-            streamingMessageIdRef.current = aiMessageId;
-            setStreamingMessageId(aiMessageId);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: aiMessageId,
-                role: 'assistant',
-                content: assistantContent,
-                timestamp: new Date(),
-                attachments: [],
-                thoughtDurationSeconds: thoughtSecs,
-                metadata: buildMeta(),
-              },
-            ]);
-          } else {
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === aiMessageId
-                  ? { ...msg, content: assistantContent, metadata: { ...msg.metadata, ...buildMeta() } }
-                  : msg
-              )
-            );
-          }
-        };
-
-        await copilotChatService.streamEstimate({
-          conversationId: convId,
-          content: hasContent ? content : undefined,
-          imageBase64,
-          imageMimeType,
-          senderId: user?.id ? String(user.id) : undefined,
-          onEvent: (event) => {
-            if (__DEV__) {
-              // Diagnostic: capture the real estimate event shapes (remove once confirmed).
-              console.log('[Estimate evt]', event.type, JSON.stringify(event.data ?? event.content ?? event));
-            }
-            if (event.type === 'user_message' && event.data) {
-              const confirmedUserMsg = mapCopilotMessageToUi(event.data);
-              setMessages((prev) =>
-                prev.map((msg) => (msg.id === tempUserMessage.id ? confirmedUserMsg : msg))
-              );
-            } else if (event.type === 'thinking') {
-              setIsThinking(true);
-            } else if (event.type === 'node' && event.node) {
-              const labels: Record<string, string> = {
-                identify: 'Identifying equipment',
-                build_quote: 'Building quote',
-                ask_questions: 'Preparing follow-up questions',
-              };
-              upsertStep(event.node, labels[event.node] ?? event.node, {
-                status: event.phase === 'end' ? 'done' : 'active',
-              });
-              upsertAssistant();
-            } else if (event.type === 'identified') {
-              const eq = event.data as unknown as IdentifiedEquipment | null;
-              const detail =
-                eq && (eq.brand || eq.model)
-                  ? `${[eq.brand, eq.model].filter(Boolean).join(' ')}${
-                      eq.confidence != null ? ` · ${Math.round(eq.confidence * 100)}%` : ''
-                    }`
-                  : 'No confident match';
-              upsertStep('identify', 'Identifying equipment', { detail });
-              upsertAssistant();
-            } else if (event.type === 'message' && event.content) {
-              // New model: the full chat-bubble text arrives once (no token streaming).
-              assistantContent = event.content;
-              upsertAssistant();
-              addToQueue(event.content);
-            } else if (event.type === 'chunk' && event.content) {
-              // Legacy fallback: append streamed tokens if an older backend still sends them.
-              assistantContent += event.content;
-              upsertAssistant();
-              addToQueue(event.content);
-            } else if (event.type === 'quote' && event.data) {
-              // The quote payload arrives in `data` typed as CopilotMessage; it is an EstimateQuote.
-              quoteData = event.data as unknown as EstimateQuote;
-              upsertAssistant();
-            } else if (event.type === 'questions') {
-              questionsData = extractQuestions(event);
-              upsertAssistant();
-            } else if (event.type === 'done') {
-              flush();
-              responseKind = event.responseKind ?? responseKind;
-              const finalAi = event.data ? mapCopilotMessageToUi(event.data) : undefined;
-              const serverMeta = (finalAi?.metadata ?? {}) as NonNullable<Message['metadata']>;
-              const finalMeta: NonNullable<Message['metadata']> = {
-                mode: 'estimate',
-                responseKind: responseKind ?? serverMeta.responseKind,
-              };
-              const quote = quoteData ?? serverMeta.quote;
-              const questions = questionsData ?? serverMeta.questions;
-              const requiresSignature = event.requiresSignature ?? serverMeta.requiresSignature;
-              if (quote) finalMeta.quote = quote;
-              if (questions) finalMeta.questions = questions;
-              if (requiresSignature) finalMeta.requiresSignature = true;
-              // Preserve a previously-signed PDF if the message is re-hydrated/updated.
-              if (serverMeta.quotePdf) finalMeta.quotePdf = serverMeta.quotePdf;
-              trace.forEach((s) => {
-                if (s.status === 'active') s.status = 'done';
-              });
-              const finalTrace = trace.length ? trace.map((s) => ({ ...s })) : serverMeta.thinkingTrace;
-              if (finalTrace?.length) finalMeta.thinkingTrace = finalTrace;
-
-              const creating = !messageCreated;
-              if (creating) {
-                messageCreated = true;
-                const start = thinkingStartedAtRef.current ?? Date.now();
-                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                setIsThinking(false);
-                streamingMessageIdRef.current = aiMessageId;
-                setStreamingMessageId(aiMessageId);
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: finalAi?.id || aiMessageId,
-                    role: 'assistant',
-                    content: finalAi?.content ?? assistantContent,
-                    timestamp: finalAi?.timestamp ?? new Date(),
-                    attachments: finalAi?.attachments ?? [],
-                    thoughtDurationSeconds: thoughtSecs,
-                    metadata: finalMeta,
-                  },
-                ]);
-              } else {
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === aiMessageId
-                      ? {
-                          ...msg,
-                          id: finalAi?.id || aiMessageId,
-                          content: finalAi?.content ?? msg.content,
-                          metadata: finalMeta,
-                        }
-                      : msg
-                  )
-                );
-              }
-            } else if (event.type === 'error') {
-              console.warn('[AskAI] Estimate stream error:', event.error);
-              setIsThinking(false);
-              stopTTS();
-            }
-          },
-        });
-      } catch (err) {
-        console.warn('[AskAI] Estimate send failed', err);
-        stopTTS();
-        setIsThinking(false);
-      } finally {
-        setIsLoading(false);
-        setIsThinking(false);
-        setStreamingMessageId(null);
-        streamingMessageIdRef.current = null;
-        thinkingStartedAtRef.current = null;
-      }
-    },
-    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS]
-  );
-
-  // Estimate Cost follow-up: tapping an option (or submitting "Other") re-sends the
-  // chosen value to the estimate endpoint in the same conversation.
-  const handleAnswerQuestion = useCallback(
-    (value: string) => {
-      void handleSendEstimate(value);
-    },
-    [handleSendEstimate]
-  );
 
   // Share/Save: download the attachment PDF to a local file and present the iOS share sheet.
   // (The inline preview renders the remote URL directly; this is only for the explicit Share action.)
@@ -762,27 +515,25 @@ export const AskAITab: React.FC = () => {
   );
 
   /**
-   * Main message handler - supports text, voice, and images
-   *
-   * Flow:
-   * 1. Images: Upload → Create user message → Stream AI response
-   * 2. Text/Voice: Create optimistic message → Stream AI response
-   *
-   * Streaming uses XMLHttpRequest for React Native compatibility
+   * Unified message handler — routes all turns (text, voice, image, follow-up) through
+   * the single copilot stream endpoint. The backend auto-routes to general chat or
+   * cost-estimation; all block types are handled by one reducer.
    */
   const handleSendMessage = useCallback(
     async (content: string, _type: 'text' | 'voice' | 'image') => {
-      // Estimate Cost mode routes to the dedicated estimate endpoint.
-      if (estimateMode) {
-        await handleSendEstimate(content);
-        return;
-      }
-
       const hasContent = content.trim().length > 0;
       const hasImages = pendingImages.length > 0;
       if (!isAllowed || (!hasContent && !hasImages)) return;
 
-      // Optimistic UI: add user message immediately
+      // Clear any followUp chips from previous AI messages when user sends a new turn.
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.role === 'assistant' && msg.metadata?.followUps?.length
+            ? { ...msg, metadata: { ...msg.metadata, followUps: undefined } }
+            : msg
+        )
+      );
+
       const tempUserMessage: Message = {
         id: `user-${Date.now()}`,
         role: 'user',
@@ -800,6 +551,244 @@ export const AskAITab: React.FC = () => {
       setMessages((prev) => [...prev, tempUserMessage]);
       setIsLoading(true);
 
+      // ── Shared streaming helper ───────────────────────────────────────────────
+      const streamAiResponse = async (convId: string, userMsgId: string) => {
+        const aiMessageId = `ai-${Date.now()}`;
+        let assistantContent = '';
+        let messageCreated = false;
+        let quoteData: EstimateQuote | undefined;
+        let questionsData: FollowUpQuestion[] | undefined;
+        let citationsData: CitationItem[] | undefined;
+        let sourcesData: SourceItem[] | undefined;
+        let followUpsData: FollowUpChip[] | undefined;
+        let actionsData: ActionItem[] | undefined;
+        let identifiedData: Identification | undefined;
+        let responseKind: 'quote' | 'questions' | 'message' | undefined;
+        const trace: ThinkingStep[] = [];
+
+        const upsertStep = (id: string, label: string, patch: Partial<ThinkingStep> = {}) => {
+          const existing = trace.find((s) => s.id === id);
+          if (existing) {
+            existing.label = label;
+            if (patch.detail !== undefined) existing.detail = patch.detail;
+            if (patch.status) existing.status = patch.status;
+          } else {
+            trace.push({ id, label, status: 'active', ...patch });
+          }
+        };
+
+        const buildMeta = (): NonNullable<Message['metadata']> => {
+          const meta: NonNullable<Message['metadata']> = {};
+          if (responseKind) meta.responseKind = responseKind;
+          if (quoteData) meta.quote = quoteData;
+          if (questionsData) meta.questions = questionsData;
+          if (citationsData) meta.citations = citationsData;
+          if (sourcesData) meta.sources = sourcesData;
+          if (followUpsData) meta.followUps = followUpsData;
+          if (actionsData) meta.actions = actionsData;
+          if (identifiedData) meta.identifiedEquipment = identifiedData;
+          if (trace.length) meta.thinkingTrace = trace.map((s) => ({ ...s }));
+          return meta;
+        };
+
+        const extractQuestions = (ev: any): FollowUpQuestion[] | undefined => {
+          const d = ev?.data;
+          if (Array.isArray(d)) return d;
+          if (Array.isArray(d?.questions)) return d.questions;
+          if (Array.isArray(ev?.questions)) return ev.questions;
+          if (Array.isArray(d?.data?.questions)) return d.data.questions;
+          return undefined;
+        };
+
+        const upsertAssistant = () => {
+          if (!messageCreated) {
+            messageCreated = true;
+            const start = thinkingStartedAtRef.current ?? Date.now();
+            const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+            setIsThinking(false);
+            streamingMessageIdRef.current = aiMessageId;
+            setStreamingMessageId(aiMessageId);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: aiMessageId,
+                role: 'assistant',
+                content: assistantContent,
+                timestamp: new Date(),
+                attachments: [],
+                thoughtDurationSeconds: thoughtSecs,
+                metadata: buildMeta(),
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? { ...msg, content: assistantContent, metadata: { ...msg.metadata, ...buildMeta() } }
+                  : msg
+              )
+            );
+          }
+        };
+
+        thinkingStartedAtRef.current = Date.now();
+        setIsThinking(true);
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        await copilotChatService.streamCopilot({
+          conversationId: convId,
+          content,
+          senderId: user?.id ? String(user.id) : undefined,
+          mode: estimateMode ? 'estimate' : undefined,
+          signal: controller.signal,
+          onEvent: (event) => {
+            if (__DEV__) {
+              console.log('[Copilot evt]', event.type, JSON.stringify(event.data ?? event.content ?? event.items ?? event));
+            }
+            if (event.type === 'user_message' && event.data) {
+              const confirmed = mapCopilotMessageToUi(event.data);
+              setMessages((prev) =>
+                prev.map((msg) => (msg.id === userMsgId ? confirmed : msg))
+              );
+            } else if (event.type === 'thinking') {
+              setIsThinking(true);
+            } else if (event.type === 'routing') {
+              if (messageCreated && (event.reason ?? event.route)) {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? { ...msg, metadata: { ...msg.metadata, routingHint: event.reason ?? event.route } }
+                      : msg
+                  )
+                );
+              }
+            } else if (event.type === 'node' && event.node) {
+              const labels: Record<string, string> = {
+                identify: 'Identifying equipment',
+                build_quote: 'Building quote',
+                ask_questions: 'Preparing follow-up questions',
+              };
+              const nodeLabel = labels[event.node] ?? event.node;
+              // Surface the active step in the "Thinking…" indicator (cleared on first content).
+              if (event.phase !== 'end') setStepLabel(nodeLabel);
+              upsertStep(event.node, nodeLabel, {
+                status: event.phase === 'end' ? 'done' : 'active',
+              });
+              upsertAssistant();
+            } else if (event.type === 'identified') {
+              const eq = event.data as unknown as Identification | null;
+              if (eq) identifiedData = eq;
+              const detail =
+                eq && (eq.brand || eq.model)
+                  ? `${[eq.brand, eq.model].filter(Boolean).join(' ')}${
+                      eq.confidence != null ? ` · ${Math.round(eq.confidence * 100)}%` : ''
+                    }`
+                  : 'No confident match';
+              upsertStep('identify', 'Identifying equipment', { detail });
+              upsertAssistant();
+            } else if (event.type === 'message' && event.content) {
+              setStepLabel(null);
+              assistantContent = event.content;
+              upsertAssistant();
+              addToQueue(event.content);
+            } else if (event.type === 'chunk' && event.content) {
+              setStepLabel(null);
+              assistantContent += event.content;
+              upsertAssistant();
+              addToQueue(event.content);
+            } else if (event.type === 'quote' && event.data) {
+              quoteData = event.data as unknown as EstimateQuote;
+              upsertAssistant();
+            } else if (event.type === 'questions') {
+              questionsData = extractQuestions(event);
+              upsertAssistant();
+            } else if (event.type === 'citations' && event.items) {
+              citationsData = event.items as CitationItem[];
+              upsertAssistant();
+            } else if (event.type === 'sources' && event.items) {
+              sourcesData = event.items as SourceItem[];
+              upsertAssistant();
+            } else if (event.type === 'followUps' && event.items) {
+              followUpsData = event.items as FollowUpChip[];
+              upsertAssistant();
+            } else if (event.type === 'done') {
+              flush();
+              responseKind = event.responseKind ?? responseKind;
+              const finalAi = event.data ? mapCopilotMessageToUi(event.data) : undefined;
+              const serverMeta = (finalAi?.metadata ?? {}) as NonNullable<Message['metadata']>;
+
+              // Use done.response.blocks as the source of truth for final render.
+              const blocks = event.response?.blocks ?? [];
+              const quoteBlock = blocks.find((b) => b.kind === 'quote');
+              const questionsBlock = blocks.find((b) => b.kind === 'questions');
+              const citationsBlock = blocks.find((b) => b.kind === 'citations');
+              const sourcesBlock = blocks.find((b) => b.kind === 'sources');
+              const followUpsBlock = blocks.find((b) => b.kind === 'followUps');
+              const actionsBlock = blocks.find((b) => b.kind === 'actions');
+
+              trace.forEach((s) => { if (s.status === 'active') s.status = 'done'; });
+              const finalTrace = trace.length ? trace.map((s) => ({ ...s })) : serverMeta.thinkingTrace;
+
+              const finalMeta: NonNullable<Message['metadata']> = {
+                responseKind: responseKind ?? serverMeta.responseKind,
+                blocks,
+                requiresSignature: event.requiresSignature ?? serverMeta.requiresSignature,
+                quotePdf: serverMeta.quotePdf,
+                quote: ((quoteBlock?.kind === 'quote' ? quoteBlock.data : undefined) as EstimateQuote | undefined) ?? quoteData ?? serverMeta.quote,
+                questions: ((questionsBlock?.kind === 'questions' ? questionsBlock.data?.questions : undefined) as FollowUpQuestion[] | undefined) ?? questionsData ?? serverMeta.questions,
+                citations: (citationsBlock?.kind === 'citations' ? citationsBlock.items : undefined) ?? citationsData ?? serverMeta.citations,
+                sources: (sourcesBlock?.kind === 'sources' ? sourcesBlock.items : undefined) ?? sourcesData ?? serverMeta.sources,
+                followUps: (followUpsBlock?.kind === 'followUps' ? followUpsBlock.items : undefined) ?? followUpsData ?? serverMeta.followUps,
+                actions: (actionsBlock?.kind === 'actions' ? actionsBlock.items : undefined) ?? actionsData ?? serverMeta.actions,
+                identifiedEquipment: identifiedData ?? serverMeta.identifiedEquipment,
+              };
+              if (finalTrace?.length) finalMeta.thinkingTrace = finalTrace;
+
+              if (!messageCreated) {
+                messageCreated = true;
+                const start = thinkingStartedAtRef.current ?? Date.now();
+                const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
+                setIsThinking(false);
+                streamingMessageIdRef.current = aiMessageId;
+                setStreamingMessageId(aiMessageId);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: finalAi?.id || aiMessageId,
+                    role: 'assistant',
+                    content: finalAi?.content ?? assistantContent,
+                    timestamp: finalAi?.timestamp ?? new Date(),
+                    attachments: finalAi?.attachments ?? [],
+                    thoughtDurationSeconds: thoughtSecs,
+                    metadata: finalMeta,
+                  },
+                ]);
+              } else {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? {
+                          ...msg,
+                          id: finalAi?.id || aiMessageId,
+                          content: finalAi?.content ?? msg.content,
+                          metadata: finalMeta,
+                        }
+                      : msg
+                  )
+                );
+              }
+            } else if (event.type === 'error') {
+              console.warn('[AskAI] Stream error:', event.error);
+              setIsThinking(false);
+              stopTTS();
+            }
+          },
+        });
+      };
+      // ── End shared streaming helper ───────────────────────────────────────────
+
       try {
         const convId = await ensureConversation();
         if (!convId) {
@@ -807,36 +796,25 @@ export const AskAITab: React.FC = () => {
           return;
         }
 
-        // If there are pending images, upload them first
-        if (pendingImages.length > 0) {
-
+        if (hasImages) {
           setIsUploadingImages(true);
           setPendingImages((prev) => prev.map((img) => ({ ...img, isUploading: true })));
-
           try {
             const imagesToUpload = pendingImages.map((img) => ({
               uri: img.uri,
-            type: img.type || 'image/jpeg',
-            name: img.name || `image-${img.id}.jpg`,
+              type: img.type || 'image/jpeg',
+              name: img.name || `image-${img.id}.jpg`,
             }));
-
-            console.log('[AskAI] Uploading images:', imagesToUpload.length);
-
-            // Upload images (this creates the user message with images)
             const uploadResult = await copilotChatService.uploadImages(
               convId,
               imagesToUpload,
               hasContent ? content : undefined
             );
-            console.log('[AskAI] Images uploaded successfully');
-
             setPendingImages([]);
             setIsUploadingImages(false);
-
-            // Add the image message to chat
             if (uploadResult.message) {
               setMessages((prev) => [
-                ...prev.filter((m) => m.id !== tempUserMessage.id), // Remove optimistic message
+                ...prev.filter((m) => m.id !== tempUserMessage.id),
                 {
                   id: uploadResult.message.id,
                   role: 'user',
@@ -855,320 +833,15 @@ export const AskAITab: React.FC = () => {
                 },
               ]);
             }
-
-            /**
-             * Stream AI response after image upload
-             * 
-             * SSE Event Flow:
-             * 1. 'chunk': Content tokens arrive → Update message in real-time
-             * 2. 'done': Stream complete → Finalize with server data
-             * 3. 'error': Handle errors gracefully
-             * 
-             * Uses XMLHttpRequest for React Native streaming support
-             */
-            const aiMessageId = `ai-${Date.now()}`;
-            let streamedContent = '';
-            let messageCreated = false;
-
-            thinkingStartedAtRef.current = Date.now();
-            setIsThinking(true);
-
-            try {
-              await copilotChatService.streamMessage({
-                conversationId: convId,
-                content,
-                senderId: user?.id ? String(user.id) : undefined,
-                onEvent: (event) => {
-                  if (event.type === 'thinking') {
-                    setIsThinking(true);
-                  } else if (event.type === 'chunk' && event.content) {
-                    if (!messageCreated) {
-                      messageCreated = true;
-                      const start = thinkingStartedAtRef.current ?? Date.now();
-                      const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                      setIsThinking(false);
-                      streamingMessageIdRef.current = aiMessageId;
-                      setStreamingMessageId(aiMessageId);
-                      streamedContent = event.content;
-                      setMessages((prev) => [
-                        ...prev,
-                        {
-                          id: aiMessageId,
-                          role: 'assistant',
-                          content: streamedContent,
-                          timestamp: new Date(),
-                          attachments: [],
-                          thoughtDurationSeconds: thoughtSecs,
-                        },
-                      ]);
-                      addToQueue(event.content);
-                    } else {
-                      streamedContent += event.content;
-                      setMessages((prev) =>
-                        prev.map((msg) =>
-                          msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
-                        )
-                      );
-                      addToQueue(event.content);
-                    }
-                  } else if (event.type === 'done' && event.data) {
-                    flush();
-                    if (!messageCreated) {
-                      messageCreated = true;
-                      const start = thinkingStartedAtRef.current ?? Date.now();
-                      const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                      setIsThinking(false);
-                      const finalAi = mapCopilotMessageToUi(event.data);
-                      streamingMessageIdRef.current = aiMessageId;
-                      setStreamingMessageId(aiMessageId);
-                      setMessages((prev) => [
-                        ...prev,
-                        {
-                          ...finalAi,
-                          id: finalAi.id || aiMessageId,
-                          thoughtDurationSeconds: thoughtSecs,
-                        },
-                      ]);
-                    } else {
-                      const finalAi = mapCopilotMessageToUi(event.data);
-                      setMessages((prev) =>
-                        prev.map((msg) =>
-                          msg.id === aiMessageId
-                            ? {
-                                ...finalAi,
-                                id: finalAi.id || aiMessageId,
-                                thoughtDurationSeconds: msg.thoughtDurationSeconds,
-                              }
-                            : msg
-                        )
-                      );
-                    }
-                  } else if (event.type === 'error') {
-                    console.warn('[AskAI] Stream error:', event.error);
-                    setIsThinking(false);
-                    stopTTS();
-                  }
-                },
-              });
-            } catch (streamErr) {
-              console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
-              stopTTS();
-
-              const { aiMessage } = await copilotChatService.sendMessage({
-                conversationId: convId,
-                content,
-                senderId: user?.id ? String(user.id) : undefined,
-              });
-
-              const thoughtSecs = Math.max(
-                1,
-                Math.round((Date.now() - (thinkingStartedAtRef.current ?? Date.now())) / 1000)
-              );
-              setIsThinking(false);
-
-              setMessages((prev) => {
-                if (!messageCreated) {
-                  return [
-                    ...prev,
-                    {
-                      id: aiMessage.id,
-                      role: 'assistant',
-                      content: aiMessage.content ?? streamedContent,
-                      timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
-                      attachments: (aiMessage.attachments || []).map((a) => ({
-                        id: a.id,
-                        fileName: a.fileName,
-                        fileType: a.fileType,
-                        fileSize: a.fileSize,
-                        url: a.url,
-                        presignedUrl: a.presignedUrl,
-                      })),
-                      thoughtDurationSeconds: thoughtSecs,
-                    },
-                  ];
-                }
-                return prev.map((msg) =>
-                  msg.id === aiMessageId
-                    ? {
-                        id: aiMessage.id,
-                        role: 'assistant',
-                        content: aiMessage.content ?? streamedContent,
-                        timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
-                        attachments: (aiMessage.attachments || []).map((a) => ({
-                          id: a.id,
-                          fileName: a.fileName,
-                          fileType: a.fileType,
-                          fileSize: a.fileSize,
-                          url: a.url,
-                          presignedUrl: a.presignedUrl,
-                        })),
-                        thoughtDurationSeconds: msg.thoughtDurationSeconds ?? thoughtSecs,
-                      }
-                    : msg
-                );
-              });
-            }
+            await streamAiResponse(convId, tempUserMessage.id);
           } catch (uploadErr) {
             console.warn('[AskAI] Image upload failed', uploadErr);
             setIsUploadingImages(false);
             setPendingImages((prev) => prev.map((img) => ({ ...img, isUploading: false })));
           }
         } else {
-          /**
-           * Stream text/voice message response
-           *
-           * Assistant row appears on first chunk (copilot-style Thinking... indicator until then).
-           */
-          const aiMessageId = `ai-${Date.now()}`;
-          let streamedContent = '';
-          let messageCreated = false;
-
-          thinkingStartedAtRef.current = Date.now();
-          setIsThinking(true);
-
-          try {
-            await copilotChatService.streamMessage({
-              conversationId: convId,
-              content,
-              senderId: user?.id ? String(user.id) : undefined,
-              onEvent: (event) => {
-                if (event.type === 'user_message' && event.data) {
-                  const confirmedUserMsg = mapCopilotMessageToUi(event.data);
-                  setMessages((prev) =>
-                    prev.map((msg) => (msg.id === tempUserMessage.id ? confirmedUserMsg : msg))
-                  );
-                } else if (event.type === 'thinking') {
-                  setIsThinking(true);
-                } else if (event.type === 'chunk' && event.content) {
-                  if (!messageCreated) {
-                    messageCreated = true;
-                    const start = thinkingStartedAtRef.current ?? Date.now();
-                    const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                    setIsThinking(false);
-                    streamingMessageIdRef.current = aiMessageId;
-                    setStreamingMessageId(aiMessageId);
-                    streamedContent = event.content;
-                    setMessages((prev) => [
-                      ...prev,
-                      {
-                        id: aiMessageId,
-                        role: 'assistant',
-                        content: streamedContent,
-                        timestamp: new Date(),
-                        attachments: [],
-                        thoughtDurationSeconds: thoughtSecs,
-                      },
-                    ]);
-                    addToQueue(event.content);
-                  } else {
-                    streamedContent += event.content;
-                    setMessages((prev) =>
-                      prev.map((msg) =>
-                        msg.id === aiMessageId ? { ...msg, content: streamedContent } : msg
-                      )
-                    );
-                    addToQueue(event.content);
-                  }
-                } else if (event.type === 'done' && event.data) {
-                  flush();
-                  if (!messageCreated) {
-                    messageCreated = true;
-                    const start = thinkingStartedAtRef.current ?? Date.now();
-                    const thoughtSecs = Math.max(1, Math.round((Date.now() - start) / 1000));
-                    setIsThinking(false);
-                    const finalAi = mapCopilotMessageToUi(event.data);
-                    streamingMessageIdRef.current = aiMessageId;
-                    setStreamingMessageId(aiMessageId);
-                    setMessages((prev) => [
-                      ...prev,
-                      {
-                        ...finalAi,
-                        id: finalAi.id || aiMessageId,
-                        thoughtDurationSeconds: thoughtSecs,
-                      },
-                    ]);
-                  } else {
-                    const finalAi = mapCopilotMessageToUi(event.data);
-                    setMessages((prev) =>
-                      prev.map((msg) =>
-                        msg.id === aiMessageId
-                          ? {
-                              ...finalAi,
-                              id: finalAi.id || aiMessageId,
-                              thoughtDurationSeconds: msg.thoughtDurationSeconds,
-                            }
-                          : msg
-                      )
-                    );
-                  }
-                } else if (event.type === 'error') {
-                  console.warn('[AskAI] Stream error:', event.error);
-                  setIsThinking(false);
-                  stopTTS();
-                }
-              },
-            });
-          } catch (streamErr) {
-            console.warn('[AskAI] Streaming failed, falling back to sendMessage', streamErr);
-            stopTTS();
-
-            const { userMessage, aiMessage } = await copilotChatService.sendMessage({
-              conversationId: convId,
-              content,
-              senderId: user?.id ? String(user.id) : undefined,
-            });
-
-            const thoughtSecs = Math.max(
-              1,
-              Math.round((Date.now() - (thinkingStartedAtRef.current ?? Date.now())) / 1000)
-            );
-            setIsThinking(false);
-
-            setMessages((prev) => {
-              const withUser = prev.map((msg) =>
-                msg.id === tempUserMessage.id ? mapCopilotMessageToUi(userMessage) : msg
-              );
-              if (!messageCreated) {
-                return [
-                  ...withUser,
-                  {
-                    id: aiMessage.id,
-                    role: 'assistant',
-                    content: aiMessage.content ?? streamedContent,
-                    timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
-                    attachments: (aiMessage.attachments || []).map((a) => ({
-                      id: a.id,
-                      fileName: a.fileName,
-                      fileType: a.fileType,
-                      fileSize: a.fileSize,
-                      url: a.url,
-                      presignedUrl: a.presignedUrl,
-                    })),
-                    thoughtDurationSeconds: thoughtSecs,
-                  },
-                ];
-              }
-              return withUser.map((msg) =>
-                msg.id === aiMessageId
-                  ? {
-                      id: aiMessage.id,
-                      role: 'assistant',
-                      content: aiMessage.content ?? streamedContent,
-                      timestamp: aiMessage.createdAt ? new Date(aiMessage.createdAt) : new Date(),
-                      attachments: (aiMessage.attachments || []).map((a) => ({
-                        id: a.id,
-                        fileName: a.fileName,
-                        fileType: a.fileType,
-                        fileSize: a.fileSize,
-                        url: a.url,
-                        presignedUrl: a.presignedUrl,
-                      })),
-                      thoughtDurationSeconds: msg.thoughtDurationSeconds ?? thoughtSecs,
-                    }
-                  : msg
-              );
-            });
-          }
+          setPendingImages([]);
+          await streamAiResponse(convId, tempUserMessage.id);
         }
       } catch (err) {
         console.warn('[AskAI] Send failed', err);
@@ -1177,12 +850,48 @@ export const AskAITab: React.FC = () => {
       } finally {
         setIsLoading(false);
         setIsThinking(false);
+        setStepLabel(null);
         setStreamingMessageId(null);
         streamingMessageIdRef.current = null;
         thinkingStartedAtRef.current = null;
+        abortControllerRef.current = null;
       }
     },
-    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS, estimateMode, handleSendEstimate]
+    [ensureConversation, isAllowed, mapCopilotMessageToUi, user?.id, pendingImages, addToQueue, flush, stopTTS, estimateMode]
+  );
+
+  // Stop button — abort the in-flight stream and clear streaming state. Any partial
+  // assistant text already streamed remains in the chat.
+  const handleStopStreaming = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    flush();
+    stopTTS();
+    setIsThinking(false);
+    setStepLabel(null);
+    setStreamingMessageId(null);
+    streamingMessageIdRef.current = null;
+  }, [flush, stopTTS]);
+
+  // Follow-up question answer: re-sends chosen option value as a new turn.
+  const handleAnswerQuestion = useCallback(
+    (value: string) => { void handleSendMessage(value, 'text'); },
+    [handleSendMessage]
+  );
+
+  // Suggestion chip tapped: clear chips then send a new turn with the chip prompt.
+  const handleFollowUpPress = useCallback(
+    (prompt: string) => {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.role === 'assistant' && msg.metadata?.followUps?.length
+            ? { ...msg, metadata: { ...msg.metadata, followUps: undefined } }
+            : msg
+        )
+      );
+      void handleSendMessage(prompt, 'text');
+    },
+    [handleSendMessage]
   );
 
   // Handle image selection (from camera or gallery)
@@ -1335,6 +1044,23 @@ export const AskAITab: React.FC = () => {
           Ask me any technical queries below, I can assist you!
         </ThemedText>
       </View>
+      <View style={styles.startersContainer}>
+        {COPILOT_STARTERS.map((starter) => (
+          <Pressable
+            key={starter}
+            style={[styles.starterChip, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
+            onPress={() => handleSendMessage(starter, 'text')}
+            disabled={!canUseAskAI}
+            accessibilityRole="button"
+            accessibilityLabel={starter}
+          >
+            <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+            <ThemedText style={[styles.starterChipText, { color: colors.text }]} numberOfLines={2}>
+              {starter}
+            </ThemedText>
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 
@@ -1351,7 +1077,7 @@ export const AskAITab: React.FC = () => {
       );
     }
     if (isThinking) {
-      return <ThinkingIndicator isThinking />;
+      return <ThinkingIndicator isThinking label={stepLabel} />;
     }
     if (!isLoading && isSpeaking) {
       return (
@@ -1386,18 +1112,28 @@ export const AskAITab: React.FC = () => {
   const inputBottomPosition = Platform.OS === 'android' ? keyboardHeight : 0;
   const bottomPadding = Math.max(8, insets.bottom);
 
+  // Derive the latest AI message ID so FollowUpChips only show on the most recent turn.
+  const latestAiMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+
   const renderItem = useCallback(
     ({ item }: { item: Message }) => (
       <ChatMessage
         message={item}
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
+        isLatestAiMessage={item.role === 'assistant' && item.id === latestAiMessageId}
         onAnswerQuestion={handleAnswerQuestion}
+        onFollowUpPress={handleFollowUpPress}
         onDownloadPdf={handleDownloadPdf}
         onSignDocument={handleSignDocument}
         onEmailDocument={handleEmailDocument}
       />
     ),
-    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument, handleEmailDocument]
+    [streamingMessageId, latestAiMessageId, handleAnswerQuestion, handleFollowUpPress, handleDownloadPdf, handleSignDocument, handleEmailDocument]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -1410,8 +1146,9 @@ export const AskAITab: React.FC = () => {
       isUploadingImages,
       isThinking,
       streamingMessageId,
+      latestAiMessageId,
     }),
-    [isLoading, isTranscribing, isSpeaking, isUploadingImages, isThinking, streamingMessageId]
+    [isLoading, isTranscribing, isSpeaking, isUploadingImages, isThinking, streamingMessageId, latestAiMessageId]
   );
 
   const showJumpToLatest =
@@ -1491,6 +1228,8 @@ export const AskAITab: React.FC = () => {
           disabled={!canUseAskAI}
           estimateMode={estimateMode}
           onToggleEstimateMode={() => setEstimateMode((v) => !v)}
+          streaming={Boolean(streamingMessageId) || isThinking}
+          onStopGenerating={handleStopStreaming}
         />
       </View>
       </View>
@@ -1589,6 +1328,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 40,
     marginTop: 4,
+  },
+  startersContainer: {
+    width: '100%',
+    paddingHorizontal: 24,
+    gap: 8,
+    marginTop: 8,
+  },
+  starterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  starterChipText: {
+    flex: 1,
+    fontSize: 13,
   },
   processingContainer: {
     flexDirection: 'row',

@@ -1,6 +1,9 @@
 import { useAuthStore } from '@/store/useAuthStore';
+import type { CopilotResponse, CitationItem, SourceItem, FollowUpChip, ActionItem } from '@/copilot-contract';
 
-const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL 
+export type { CopilotResponse };
+
+const COPILOT_API_BASE = process.env.EXPO_PUBLIC_COPILOT_BASE_URL
   ? `${process.env.EXPO_PUBLIC_COPILOT_BASE_URL}/api/v1`
   : 'https://kzrvokx9if.execute-api.ap-south-1.amazonaws.com/staging/api/v1';
 
@@ -39,6 +42,7 @@ export interface StreamEvent {
   type:
     | 'user_message'
     | 'thinking'
+    | 'routing'
     | 'chunk'
     | 'message'
     | 'tool_call'
@@ -46,22 +50,32 @@ export interface StreamEvent {
     | 'identified'
     | 'quote'
     | 'questions'
+    | 'citations'
+    | 'sources'
+    | 'followUps'
     | 'error'
     | 'done';
   content?: string;
   error?: string;
   tool?: any;
-  /** Estimate workflow `node` event: graph step name + lifecycle phase. */
+  /** routing event: which route was chosen and why. */
+  route?: string;
+  reason?: string;
+  source?: string;
+  /** Workflow `node` event: graph step name + lifecycle phase. */
   node?: string;
   phase?: 'start' | 'end';
-  /** On the estimate `done` event: what the turn produced. */
+  /** On the `done` event: what the turn produced. */
   responseKind?: 'quote' | 'questions' | 'message';
-  /** On the estimate `done` event: true on a quote turn — collect a signature, then POST …/sign. */
+  /** On the `done` event: true on a quote turn — collect a signature, then POST …/sign. */
   requiresSignature?: boolean;
+  /** Structured blocks from the `done` event (source of truth for final render). */
+  response?: CopilotResponse;
+  /** Mid-stream block payloads. */
+  items?: CitationItem[] | SourceItem[] | FollowUpChip[] | ActionItem[];
   /**
-   * `CopilotMessage` for user_message/done. The estimate `quote`/`questions` events also
-   * arrive here (an `EstimateQuote` / `{ questions: FollowUpQuestion[] }`); the estimate
-   * handler casts as needed.
+   * `CopilotMessage` for user_message/done. The `quote`/`questions` events also
+   * arrive here; handler casts as needed.
    */
   data?: CopilotMessage;
 }
@@ -329,6 +343,44 @@ export const copilotChatService = {
     return { userMessage, aiMessage };
   },
 
+  /**
+   * Unified copilot stream — auto-routes between general chat and cost-estimation.
+   * Use this for all new sends. The backend decides the route; pass `mode` only to
+   * explicitly force one (optional escape hatch, no UI toggle needed).
+   *   POST /api/v1/copilot/:conversationId/stream
+   */
+  async streamCopilot(params: {
+    conversationId: string;
+    content?: string;
+    senderId?: string;
+    mode?: 'estimate' | 'general';
+    /** Presigned image URLs already uploaded to S3. */
+    imageUrls?: string[];
+    /** Inline base64 images (data URLs or raw base64). */
+    images?: string[];
+    signal?: AbortSignal;
+    onEvent: (event: StreamEvent) => void;
+  }): Promise<void> {
+    const url = `${COPILOT_API_BASE}/copilot/${params.conversationId}/stream`;
+    if (__DEV__) {
+      console.log('[streamCopilot] Starting stream to:', url);
+    }
+    return this._xhrStream({
+      url,
+      body: {
+        content: params.content,
+        senderId: params.senderId,
+        mode: params.mode,
+        imageUrls: params.imageUrls,
+        images: params.images,
+      },
+      signal: params.signal,
+      onEvent: params.onEvent,
+      tag: 'streamCopilot',
+    });
+  },
+
+  /** @deprecated Use streamCopilot() — the unified endpoint auto-routes. */
   async streamMessage(params: {
     conversationId: string;
     content: string;
@@ -336,18 +388,28 @@ export const copilotChatService = {
     signal?: AbortSignal;
     onEvent: (event: StreamEvent) => void;
   }): Promise<void> {
-    if (__DEV__) {
-      console.log('[StreamMessage] Starting stream to:', `${COPILOT_API_BASE}/chat/${params.conversationId}/stream`);
-    }
+    return this.streamCopilot({
+      conversationId: params.conversationId,
+      content: params.content,
+      senderId: params.senderId,
+      signal: params.signal,
+      onEvent: params.onEvent,
+    });
+  },
 
-    // Use XMLHttpRequest for React Native compatibility (supports progressive streaming)
+  /** Shared XHR streaming helper used by streamCopilot and streamEstimate. */
+  _xhrStream(params: {
+    url: string;
+    body: Record<string, unknown>;
+    signal?: AbortSignal;
+    onEvent: (event: StreamEvent) => void;
+    tag?: string;
+  }): Promise<void> {
+    const tag = params.tag ?? 'xhrStream';
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const url = `${COPILOT_API_BASE}/chat/${params.conversationId}/stream`;
-      
-      xhr.open('POST', url, true);
-      
-      // Set headers
+      xhr.open('POST', params.url, true);
+
       const headers = buildHeaders(true);
       Object.entries(headers).forEach(([key, value]) => {
         xhr.setRequestHeader(key, value);
@@ -355,100 +417,79 @@ export const copilotChatService = {
 
       let buffer = '';
       let processedLength = 0;
+      let eventType = 'message'; // tracks the current SSE `event:` line
 
-      // Handle progressive data as it arrives
-      xhr.onprogress = () => {
-        const responseText = xhr.responseText;
-        const newData = responseText.substring(processedLength);
-        processedLength = responseText.length;
+      const processLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) {
+          // blank line = end of frame; reset event type
+          eventType = 'message';
+          return;
+        }
+        if (trimmed.startsWith('event:')) {
+          eventType = trimmed.slice(6).trim();
+          return;
+        }
+        if (!trimmed.startsWith('data:')) return;
 
-        buffer += newData;
-
-        // Process complete lines
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(':')) continue;
-          if (!trimmed.startsWith('data:')) continue;
-
-          const payload = trimmed.slice(5).trim();
-          if (!payload) continue;
-
-          if (payload === '[DONE]') {
-            params.onEvent({ type: 'done' });
-            continue;
-          }
-
-          try {
-            const rawEvt = JSON.parse(payload);
-            const evt = this.normalizeEvent(rawEvt);
-            params.onEvent(evt);
-          } catch (err) {
-            if (__DEV__) {
-              console.warn('[StreamMessage] Failed to parse SSE payload:', payload, err);
-            }
+        const payload = trimmed.slice(5).trim();
+        if (!payload) return;
+        if (payload === '[DONE]') {
+          params.onEvent({ type: 'done' });
+          return;
+        }
+        try {
+          const rawEvt = JSON.parse(payload);
+          const evt = this.normalizeEvent(rawEvt, eventType);
+          params.onEvent(evt);
+        } catch (err) {
+          if (__DEV__) {
+            console.warn(`[${tag}] Failed to parse SSE payload:`, payload, err);
           }
         }
       };
 
+      xhr.onprogress = () => {
+        const newData = xhr.responseText.substring(processedLength);
+        processedLength = xhr.responseText.length;
+        buffer += newData;
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        lines.forEach(processLine);
+      };
+
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          // Process any remaining buffer
-          if (buffer.trim()) {
-            const trimmed = buffer.trim();
-            if (trimmed.startsWith('data:')) {
-              const payload = trimmed.slice(5).trim();
-              if (payload && payload !== '[DONE]') {
-                try {
-                  const rawEvt = JSON.parse(payload);
-                  const evt = this.normalizeEvent(rawEvt);
-                  params.onEvent(evt);
-                } catch (err) {
-                  if (__DEV__) {
-                    console.warn('[StreamMessage] Failed to parse final buffer:', payload, err);
-                  }
-                }
-              }
-            }
-          }
-          if (__DEV__) {
-            console.log('[StreamMessage] Stream completed successfully');
-          }
+          if (buffer.trim()) processLine(buffer.trim());
+          if (__DEV__) console.log(`[${tag}] Stream completed successfully`);
           resolve();
         } else {
           reject(new Error(`Stream failed (${xhr.status})`));
         }
       };
 
-      xhr.onerror = () => {
-        reject(new Error('Stream request failed'));
-      };
+      xhr.onerror = () => reject(new Error(`${tag} request failed`));
+      xhr.ontimeout = () => reject(new Error(`${tag} request timed out`));
 
-      xhr.ontimeout = () => {
-        reject(new Error('Stream request timed out'));
-      };
-
-      // Handle abort signal
       if (params.signal) {
         params.signal.addEventListener('abort', () => {
           xhr.abort();
-          reject(new Error('Stream aborted'));
+          reject(new Error(`${tag} aborted`));
         });
       }
 
-      // Send request
-      xhr.send(JSON.stringify({
-        content: params.content,
-        senderId: params.senderId,
-      }));
+      // Strip undefined fields before serialising
+      const body = Object.fromEntries(
+        Object.entries(params.body).filter(([, v]) => v !== undefined)
+      );
+      xhr.send(JSON.stringify(body));
     });
   },
 
   /**
-   * Estimate Cost (demo) — streams a markdown estimate plus a structured `quote` event.
-   * Self-contained endpoint; same SSE-over-POST framing as streamMessage.
+   * Estimate Cost — streams a markdown estimate plus a structured `quote` event.
+   * Self-contained endpoint; kept for backwards-compat. New code should use streamCopilot()
+   * with `mode: 'estimate'` (or let the unified endpoint auto-route).
    * At least one of `content`, `imageUrl`, or `imageBase64` must be provided.
    * `imageBase64` must NOT include a `data:` prefix.
    */
@@ -464,90 +505,20 @@ export const copilotChatService = {
   }): Promise<void> {
     const url = `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/stream`;
     if (__DEV__) {
-      console.log('[StreamEstimate] Starting stream to:', url);
+      console.log('[streamEstimate] Starting stream to:', url);
     }
-
-    // Use XMLHttpRequest for React Native compatibility (supports progressive streaming)
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-
-      xhr.open('POST', url, true);
-
-      const headers = buildHeaders(true);
-      Object.entries(headers).forEach(([key, value]) => {
-        xhr.setRequestHeader(key, value);
-      });
-
-      let buffer = '';
-      let processedLength = 0;
-
-      const processPayload = (payload: string) => {
-        if (!payload || payload === '[DONE]') {
-          if (payload === '[DONE]') params.onEvent({ type: 'done' });
-          return;
-        }
-        try {
-          const rawEvt = JSON.parse(payload);
-          params.onEvent(this.normalizeEvent(rawEvt));
-        } catch (err) {
-          if (__DEV__) {
-            console.warn('[StreamEstimate] Failed to parse SSE payload:', payload, err);
-          }
-        }
-      };
-
-      xhr.onprogress = () => {
-        const responseText = xhr.responseText;
-        const newData = responseText.substring(processedLength);
-        processedLength = responseText.length;
-
-        buffer += newData;
-
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(':')) continue;
-          if (!trimmed.startsWith('data:')) continue;
-          processPayload(trimmed.slice(5).trim());
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          const trimmed = buffer.trim();
-          if (trimmed.startsWith('data:')) {
-            processPayload(trimmed.slice(5).trim());
-          }
-          if (__DEV__) {
-            console.log('[StreamEstimate] Stream completed successfully');
-          }
-          resolve();
-        } else {
-          reject(new Error(`Estimate stream failed (${xhr.status})`));
-        }
-      };
-
-      xhr.onerror = () => reject(new Error('Estimate stream request failed'));
-      xhr.ontimeout = () => reject(new Error('Estimate stream request timed out'));
-
-      if (params.signal) {
-        params.signal.addEventListener('abort', () => {
-          xhr.abort();
-          reject(new Error('Estimate stream aborted'));
-        });
-      }
-
-      xhr.send(
-        JSON.stringify({
-          content: params.content,
-          imageUrl: params.imageUrl,
-          imageBase64: params.imageBase64,
-          imageMimeType: params.imageMimeType,
-          senderId: params.senderId,
-        })
-      );
+    return this._xhrStream({
+      url,
+      body: {
+        content: params.content,
+        imageUrl: params.imageUrl,
+        imageBase64: params.imageBase64,
+        imageMimeType: params.imageMimeType,
+        senderId: params.senderId,
+      },
+      signal: params.signal,
+      onEvent: params.onEvent,
+      tag: 'streamEstimate',
     });
   },
 
@@ -619,22 +590,41 @@ export const copilotChatService = {
     return params.inline ? `${base}?inline=1` : base;
   },
 
-  normalizeEvent(rawEvt: any): StreamEvent {
+  /**
+   * Coerce an SSE payload to a typed StreamEvent.
+   * `namedType` is the value from the `event:` SSE line (for named-event frames);
+   * it takes precedence over a missing `type` field in the JSON payload.
+   */
+  normalizeEvent(rawEvt: any, namedType?: string): StreamEvent {
     if (typeof rawEvt === 'string') {
-      return { type: 'chunk', content: rawEvt };
+      return { type: (namedType as StreamEvent['type']) ?? 'chunk', content: rawEvt };
     }
 
+    // If the JSON payload already carries a `type` field, trust it (mirrors the
+    // migration guide: "clients that already read data.type keep working").
     if (rawEvt.type) {
       return rawEvt as StreamEvent;
-    } else if (rawEvt.choices?.[0]?.delta?.content !== undefined) {
+    }
+
+    // Named event frame where the payload has no `type` — use the `event:` line.
+    if (namedType) {
+      return { ...rawEvt, type: namedType as StreamEvent['type'] };
+    }
+
+    // Legacy / OpenAI-compat shapes
+    if (rawEvt.choices?.[0]?.delta?.content !== undefined) {
       return { type: 'chunk', content: rawEvt.choices[0].delta.content };
-    } else if (rawEvt.content !== undefined && !rawEvt.type) {
+    }
+    if (rawEvt.content !== undefined) {
       return { type: 'chunk', content: rawEvt.content };
-    } else if (rawEvt.text !== undefined) {
+    }
+    if (rawEvt.text !== undefined) {
       return { type: 'chunk', content: rawEvt.text };
-    } else if (rawEvt.delta !== undefined) {
+    }
+    if (rawEvt.delta !== undefined) {
       return { type: 'chunk', content: rawEvt.delta };
-    } else if (rawEvt.message?.content !== undefined) {
+    }
+    if (rawEvt.message?.content !== undefined) {
       return { type: 'chunk', content: rawEvt.message.content };
     }
     return rawEvt as StreamEvent;
