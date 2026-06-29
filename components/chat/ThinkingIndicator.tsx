@@ -7,12 +7,14 @@ import { useTheme } from '@/contexts/ThemeContext';
 
 interface ThinkingIndicatorProps {
   isThinking: boolean;
+  /** Optional live step label (e.g. "Identifying equipment"); falls back to "Thinking". */
+  label?: string | null;
 }
 
 /**
- * Copilot-style row: sparkle avatar + animated "Thinking..."
+ * Copilot-style row: sparkle avatar + animated "{label}..." (defaults to "Thinking").
  */
-export const ThinkingIndicator: React.FC<ThinkingIndicatorProps> = ({ isThinking }) => {
+export const ThinkingIndicator: React.FC<ThinkingIndicatorProps> = ({ isThinking, label }) => {
   const { colors } = useTheme();
   const [dotCount, setDotCount] = useState(0);
 
@@ -30,13 +32,14 @@ export const ThinkingIndicator: React.FC<ThinkingIndicatorProps> = ({ isThinking
   if (!isThinking) return null;
 
   const dots = '.'.repeat(dotCount);
+  const text = label?.trim() || 'Thinking';
 
   return (
-    <View style={styles.row}>
+    <View style={styles.row} accessibilityLiveRegion="polite" accessibilityRole="text">
       <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
         <Ionicons name="sparkles" size={16} color="#ffffff" />
       </View>
-      <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Thinking{dots}</ThemedText>
+      <ThemedText style={[styles.label, { color: colors.textSecondary }]}>{text}{dots}</ThemedText>
     </View>
   );
 };

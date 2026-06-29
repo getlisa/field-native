@@ -1,3 +1,14 @@
+import type {
+  CopilotBlock,
+  CitationItem,
+  SourceItem,
+  FollowUpChip,
+  ActionItem,
+  Identification,
+} from '@/copilot-contract';
+
+export type { CitationItem, SourceItem, FollowUpChip, ActionItem, Identification };
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -10,9 +21,7 @@ export interface Message {
     type?: 'checklist_update' | 'proactive_suggestion';
     itemIds?: string[];
     itemId?: string;
-    /** Set on AI messages produced by the Estimate Cost demo mode. */
-    mode?: 'estimate';
-    /** What the estimate turn produced — drives whether the card/buttons render. */
+    /** What the turn produced — drives which block cards render. */
     responseKind?: EstimateResponseKind;
     /** Structured cost estimate rendered as a quote card (responseKind === 'quote'). */
     quote?: EstimateQuote;
@@ -24,6 +33,20 @@ export interface Message {
     requiresSignature?: boolean;
     /** The signed quotation PDF (presigned URL + metadata) — set after the customer signs. */
     quotePdf?: EstimatePdf;
+    /** Full typed blocks array from `done.response.blocks` — source of truth for final render. */
+    blocks?: CopilotBlock[];
+    /** Standards / NFPA citations (from a `citations` block). */
+    citations?: CitationItem[];
+    /** File / web sources (from a `sources` block). */
+    sources?: SourceItem[];
+    /** Suggestion chips (from a `followUps` block). */
+    followUps?: FollowUpChip[];
+    /** CTA action buttons (from an `actions` block). */
+    actions?: ActionItem[];
+    /** Standalone equipment identification card (from an `identified` block). */
+    identifiedEquipment?: Identification;
+    /** Ephemeral routing hint shown while the request is in-flight. */
+    routingHint?: string;
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
   thoughtDurationSeconds?: number;
