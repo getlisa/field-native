@@ -20,9 +20,7 @@ export interface Message {
     questions?: FollowUpQuestion[];
     /** Intermediate workflow events (node/identified) shown in the collapsible thinking dropdown. */
     thinkingTrace?: ThinkingStep[];
-    /** True on a quote turn (from `done`) — the customer must sign before a PDF is generated. */
-    requiresSignature?: boolean;
-    /** The signed quotation PDF (presigned URL + metadata) — set after the customer signs. */
+    /** The generated quotation PDF (URL + metadata) — set after "Generate PDF". */
     quotePdf?: EstimatePdf;
   };
   /** Seconds Clara spent thinking before the first streamed token (copilot UI). */
@@ -31,7 +29,7 @@ export interface Message {
 
 export type EstimateResponseKind = 'quote' | 'questions' | 'message';
 
-/** The signed quotation PDF returned by the `POST …/estimate/:messageId/sign` endpoint. */
+/** The quotation PDF returned by the `POST …/estimate/:messageId/generate` endpoint. */
 export interface EstimatePdf {
   /** Presigned, downloadable S3 URL (Content-Disposition: attachment). Expires ~24h. */
   url: string;
@@ -41,8 +39,8 @@ export interface EstimatePdf {
   filename?: string;
   /** Human-facing estimate number, e.g. "E0ABC12". */
   estimateNumber?: string;
-  /** ISO timestamp the estimate was signed. */
-  signedAt?: string;
+  /** ISO timestamp the PDF was generated. */
+  generatedAt?: string;
   /** Customer email pulled from the job (pre-fills the email step); null if unknown. */
   suggestedCustomerEmail?: string | null;
 }
@@ -139,19 +137,15 @@ export interface EstimateQuote {
   assumptions: string[];
   /** NFPA compliance flags / advisories. */
   customerNotes: string[];
-  /** S3 key of the generated quotation PDF (set after signing). */
+  /** S3 key of the generated quotation PDF (set once the PDF is generated). */
   pdfKey?: string;
   /** Human-facing estimate number, e.g. "E0ABC12". */
   estimateNumber?: string;
-  /** True once the customer has signed and the PDF has been generated. */
-  signed?: boolean;
-  /** ISO timestamp the estimate was signed. */
-  signedAt?: string;
-  /** Customer name captured on the signature pad. */
-  signerName?: string;
+  /** ISO timestamp the PDF was generated. */
+  pdfGeneratedAt?: string;
   /** Suggested customer email from the job (pre-fills the email step); null if unknown. */
   suggestedCustomerEmail?: string | null;
-  /** Address the signed PDF was emailed to (set after a successful send). */
+  /** Address the PDF was emailed to (set after a successful send). */
   emailedTo?: string;
   /** ISO timestamp the estimate was emailed. */
   emailedAt?: string;

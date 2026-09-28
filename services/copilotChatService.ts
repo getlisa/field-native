@@ -56,8 +56,6 @@ export interface StreamEvent {
   phase?: 'start' | 'end';
   /** On the estimate `done` event: what the turn produced. */
   responseKind?: 'quote' | 'questions' | 'message';
-  /** On the estimate `done` event: true on a quote turn — collect a signature, then POST …/sign. */
-  requiresSignature?: boolean;
   /**
    * `CopilotMessage` for user_message/done. The estimate `quote`/`questions` events also
    * arrive here (an `EstimateQuote` / `{ questions: FollowUpQuestion[] }`); the estimate
@@ -84,7 +82,7 @@ const getDeviceTimezone = (): string | undefined => {
 
 const buildHeaders = (asJson: boolean = true): HeadersShape => {
   const headers: HeadersShape = {};
-  if (asJson) headers['Content-Type'] = 'application/pdf';
+  if (asJson) headers['Content-Type'] = 'application/json';
 
   const { access_token } = useAuthStore.getState();
   if (access_token) {
@@ -545,42 +543,35 @@ export const copilotChatService = {
   },
 
   /**
-   * Confirm the estimate with the customer's signature → generates the signed PDF.
-   *   POST /copilot/:conversationId/estimate/:messageId/sign
-   * `signatureBase64` is the canvas PNG data URL (raw base64 also accepted). Returns the
-   * downloadable PDF metadata. Throws on 400 (empty signature) / 404 / 409 (not a quote turn).
+   * Generate (or regenerate) the final quotation PDF for a quote turn — no signature involved.
+   *   POST /copilot/:conversationId/estimate/:messageId/generate
+   * Returns the downloadable PDF metadata. Throws on 404 (message not found) / 409 (not a quote turn).
    */
-  async signEstimate(params: {
+  async generateEstimatePdf(params: {
     conversationId: string;
     messageId: string;
-    signatureBase64: string;
-    signerName?: string;
-  }): Promise<{ url: string; directUrl?: string; key?: string; filename?: string; estimateNumber?: string; signedAt?: string; suggestedCustomerEmail?: string | null }> {
+  }): Promise<{ url: string; directUrl?: string; key?: string; filename?: string; estimateNumber?: string; generatedAt?: string; suggestedCustomerEmail?: string | null }> {
     const res = await fetch(
-      `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/sign`,
+      `${COPILOT_API_BASE}/copilot/${params.conversationId}/estimate/${params.messageId}/generate`,
       {
         method: 'POST',
         headers: buildHeaders(true),
-        body: JSON.stringify({
-          signatureBase64: params.signatureBase64,
-          signatureMimeType: 'image/png',
-          signerName: params.signerName,
-        }),
+        body: JSON.stringify({}),
       }
     );
     const json = await handleJsonResponse<{ success?: boolean; data?: any }>(res);
     const data = json?.data ?? json;
     if (!data?.url) {
-      throw new Error('Sign response missing PDF url');
+      throw new Error('Generate response missing PDF url');
     }
     return data;
   },
 
   /**
-   * Email the signed estimate PDF to the customer (call after signing + confirming the address).
+   * Email the estimate PDF to the customer (call after generating it + confirming the address).
    *   POST /copilot/:conversationId/estimate/:messageId/email  body { to }
-   * The signed PDF is attached server-side. Throws (via handleJsonResponse) on 400 (invalid email),
-   * 404 (message not found), 409 (not a quote turn / not signed yet), 503 (email not configured).
+   * The PDF is attached server-side. Throws (via handleJsonResponse) on 400 (invalid email),
+   * 404 (message not found), 409 (not a quote turn / no PDF yet), 503 (email not configured).
    */
   async sendEstimateEmail(params: {
     conversationId: string;
@@ -600,7 +591,7 @@ export const copilotChatService = {
   },
 
   /**
-   * Build the permanent PDF endpoint URL for a signed quote (no network — the endpoint streams the
+   * Build the permanent PDF endpoint URL for a generated quote PDF (no network — the endpoint streams the
    * PDF straight from S3 and never expires):
    *   GET /copilot/:conversationId/estimate/:messageId/pdf            → downloadable (attachment)
    *   GET /copilot/:conversationId/estimate/:messageId/pdf?inline=1   → renders in-browser (inline)

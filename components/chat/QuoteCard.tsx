@@ -9,15 +9,15 @@ import type { EstimateLineItemKind, EstimateQuote } from '@/components/chat/type
 
 interface QuoteCardProps {
   quote: EstimateQuote;
-  /** When provided (signed quote), render a "Download PDF" footer button. */
+  /** When provided (PDF generated), render a "Download PDF" footer button. */
   onDownloadPdf?: () => void;
   /** Show a spinner on the download button while the PDF link resolves / opens. */
   downloadingPdf?: boolean;
-  /** When provided (unsigned quote), render a "Sign the document" footer button. */
-  onSign?: () => void;
-  /** Show a spinner on the sign button while the signed PDF is generated. */
-  signing?: boolean;
-  /** When provided (signed quote), render a "Send email" footer button. */
+  /** When provided (no PDF yet), render a "Generate PDF" footer button. */
+  onGeneratePdf?: () => void;
+  /** Show a spinner on the generate button while the PDF is being generated. */
+  generatingPdf?: boolean;
+  /** When provided (PDF generated), render a "Send email" footer button. */
   onEmail?: () => void;
   /** Show a spinner on the email button while the send is in flight. */
   emailing?: boolean;
@@ -63,7 +63,7 @@ const firstFinite = (...values: unknown[]): number | undefined => {
  * (pricebook code + kind), the materials/labor/tax subtotals and total, plus
  * collapsible assumptions and customer (NFPA) notes.
  */
-export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false, onSign, signing = false, onEmail, emailing = false, emailedTo }) => {
+export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, downloadingPdf = false, onGeneratePdf, generatingPdf = false, onEmail, emailing = false, emailedTo }) => {
   const { colors } = useTheme();
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
 
@@ -271,7 +271,7 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, down
         </>
       ) : null}
 
-      {/* Signed → Download PDF + Send email; otherwise → Sign the document */}
+      {/* PDF generated → Download PDF + Send email; otherwise → Generate PDF */}
       {onDownloadPdf ? (
         <>
           <View style={styles.actionRow}>
@@ -321,22 +321,22 @@ export const QuoteCard: React.FC<QuoteCardProps> = ({ quote, onDownloadPdf, down
             </View>
           ) : null}
         </>
-      ) : onSign ? (
+      ) : onGeneratePdf ? (
         <Pressable
           style={[styles.downloadButton, { backgroundColor: colors.primary }]}
-          onPress={onSign}
-          disabled={signing}
+          onPress={onGeneratePdf}
+          disabled={generatingPdf}
           accessibilityRole="button"
-          accessibilityLabel="Sign the document"
-          accessibilityState={{ disabled: signing }}
+          accessibilityLabel="Generate quotation PDF"
+          accessibilityState={{ disabled: generatingPdf }}
         >
-          {signing ? (
+          {generatingPdf ? (
             <ActivityIndicator size="small" color="#ffffff" />
           ) : (
-            <Ionicons name="create-outline" size={16} color="#ffffff" />
+            <Ionicons name="document-text-outline" size={16} color="#ffffff" />
           )}
           <ThemedText style={styles.downloadLabel}>
-            {signing ? 'Generating…' : 'Sign the document'}
+            {generatingPdf ? 'Generating…' : 'Generate PDF'}
           </ThemedText>
         </Pressable>
       ) : null}

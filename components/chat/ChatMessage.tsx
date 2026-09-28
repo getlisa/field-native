@@ -29,19 +29,19 @@ interface ChatMessageProps {
   onAnswerQuestion?: (value: string) => void;
   /** Estimate Cost: download/open the generated quotation PDF for this message. */
   onDownloadPdf?: (message: Message) => void | Promise<void>;
-  /** Estimate Cost: open the signature pad to confirm this quote. */
-  onSignDocument?: (message: Message) => void;
-  /** Estimate Cost: email the signed PDF to the customer. */
+  /** Estimate Cost: generate the quotation PDF for this quote. */
+  onGeneratePdf?: (message: Message) => Promise<void>;
+  /** Estimate Cost: email the generated PDF to the customer. */
   onEmailDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onSignDocument, onEmailDocument }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onGeneratePdf, onEmailDocument }) => {
   const { colors } = useTheme();
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
-  // Estimate quote signing state: signed once a PDF exists; needs a signature when `done` flagged it.
-  const isSigned = !!(message.metadata?.quote?.signed || message.metadata?.quotePdf?.url);
-  const needsSignature = !!message.metadata?.requiresSignature;
+  // Estimate quote PDF state: a PDF exists once it has been generated (key persisted or URL returned).
+  const hasPdf = !!(message.metadata?.quote?.pdfKey || message.metadata?.quotePdf?.url);
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set());
@@ -364,7 +364,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             quote={message.metadata.quote}
             downloadingPdf={downloadingPdf}
             onDownloadPdf={
-              onDownloadPdf && isSigned
+              onDownloadPdf && hasPdf
                 ? async () => {
                     setDownloadingPdf(true);
                     try {
@@ -375,13 +375,21 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                   }
                 : undefined
             }
-            onSign={
-              !isSigned && needsSignature && onSignDocument
-                ? () => onSignDocument(message)
+            generatingPdf={generatingPdf}
+            onGeneratePdf={
+              !hasPdf && !isStreaming && onGeneratePdf
+                ? async () => {
+                    setGeneratingPdf(true);
+                    try {
+                      await onGeneratePdf(message);
+                    } finally {
+                      setGeneratingPdf(false);
+                    }
+                  }
                 : undefined
             }
             onEmail={
-              isSigned && onEmailDocument ? () => onEmailDocument(message) : undefined
+              hasPdf && onEmailDocument ? () => onEmailDocument(message) : undefined
             }
             emailedTo={message.metadata?.quote?.emailedTo}
           />

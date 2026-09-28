@@ -7,7 +7,7 @@ export interface SwipeNavigationConfig<T extends string> {
   onTabChange: (tab: T) => void;
   swipeThreshold?: number;
   animationDuration?: number;
-  /** When false, the swipe gesture is disabled (e.g. while a signature pad/modal is open). */
+  /** When false, the swipe gesture is disabled (e.g. while a modal is open). */
   enabled?: boolean;
 }
 

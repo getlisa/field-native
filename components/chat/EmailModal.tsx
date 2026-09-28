@@ -18,7 +18,7 @@ interface EmailModalProps {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * Confirm/edit the customer's email, then send the signed estimate PDF. Pre-fills with the
+ * Confirm/edit the customer's email, then send the estimate PDF. Pre-fills with the
  * job's suggested address when available; otherwise the tech types one in.
  */
 export const EmailModal: React.FC<EmailModalProps> = ({ visible, suggestedEmail, sending = false, error, onCancel, onSend }) => {
@@ -48,7 +48,7 @@ export const EmailModal: React.FC<EmailModalProps> = ({ visible, suggestedEmail,
             </Pressable>
           </View>
 
-          <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Send the signed estimate to</ThemedText>
+          <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Send the estimate to</ThemedText>
           <TextInput
             value={email}
             onChangeText={setEmail}

@@ -29,6 +29,7 @@ import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Keyboard,
   NativeScrollEvent,
@@ -43,7 +44,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { EmailModal } from '@/components/chat/EmailModal';
 import { PdfPreview } from '@/components/chat/PdfPreview';
-import { SignaturePad } from '@/components/chat/SignaturePad';
 import { MultiModalInput, type VoiceRecordingResult } from '@/components/chat/MultiModalInput';
 import { ThinkingIndicator } from '@/components/chat/ThinkingIndicator';
 import { ThemedText } from '@/components/themed-text';
@@ -87,9 +87,6 @@ export const AskAITab: React.FC = () => {
   // Estimate Cost demo mode — sticky toggle in the chat bar. Routes the next send
   // to the estimate endpoint instead of the normal copilot stream.
   const [estimateMode, setEstimateMode] = useState(false);
-  // Estimate Cost signing: the quote message whose signature pad is open, + in-flight flag.
-  const [signingMessage, setSigningMessage] = useState<Message | null>(null);
-  const [isSigning, setIsSigning] = useState(false);
   // Estimate Cost: the downloaded PDF being previewed (local file URI + filename).
   const [pdfPreview, setPdfPreview] = useState<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
   // Estimate Cost emailing: the quote message whose email modal is open, + in-flight flag + error.
@@ -97,19 +94,16 @@ export const AskAITab: React.FC = () => {
   const [isEmailing, setIsEmailing] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
 
-  // Suspend tab-swipe while a signature pad / PDF preview / email modal is open (gestures stay put).
+  // Suspend tab-swipe while a PDF preview / email modal is open (gestures stay put).
   useEffect(() => {
-    const blocking = !!signingMessage || !!pdfPreview || !!emailingMessage;
+    const blocking = !!pdfPreview || !!emailingMessage;
     setSwipeEnabled?.(!blocking);
     return () => setSwipeEnabled?.(true);
-  }, [signingMessage, pdfPreview, emailingMessage, setSwipeEnabled]);
+  }, [pdfPreview, emailingMessage, setSwipeEnabled]);
 
   const userScrolledUpRef = useRef(false);
   const thinkingStartedAtRef = useRef<number | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
-  // Signed PDF to open once the signature modal has fully dismissed (avoids an iOS
-  // present-while-dismissing freeze). Opened by openPendingPdf via onDismiss / a timeout.
-  const pendingPdfRef = useRef<{ previewUrl: string; downloadUrl: string; filename?: string } | null>(null);
   // Re-entrancy guard so rapid Download taps don't stack downloads/preview sheets.
   const isOpeningPdfRef = useRef(false);
 
@@ -495,11 +489,9 @@ export const AskAITab: React.FC = () => {
               };
               const quote = quoteData ?? serverMeta.quote;
               const questions = questionsData ?? serverMeta.questions;
-              const requiresSignature = event.requiresSignature ?? serverMeta.requiresSignature;
               if (quote) finalMeta.quote = quote;
               if (questions) finalMeta.questions = questions;
-              if (requiresSignature) finalMeta.requiresSignature = true;
-              // Preserve a previously-signed PDF if the message is re-hydrated/updated.
+              // Preserve a previously-generated PDF if the message is re-hydrated/updated.
               if (serverMeta.quotePdf) finalMeta.quotePdf = serverMeta.quotePdf;
               trace.forEach((s) => {
                 if (s.status === 'active') s.status = 'done';
@@ -617,18 +609,68 @@ export const AskAITab: React.FC = () => {
     [conversationId, ensureConversation]
   );
 
-  // Estimate Cost: open the signature pad for a quote message.
-  const handleSignDocument = useCallback((message: Message) => {
-    setSigningMessage(message);
-  }, []);
+  // Estimate Cost: generate the quotation PDF, persist the result on the message (so the card
+  // flips to "Download" + "Send email"), then open the inline preview.
+  const handleGeneratePdf = useCallback(
+    async (message: Message) => {
+      try {
+        const convId = conversationId ?? (await ensureConversation());
+        if (!convId) {
+          console.warn('[AskAI] No conversation ID, cannot generate PDF');
+          return;
+        }
+        const result = await copilotChatService.generateEstimatePdf({
+          conversationId: convId,
+          messageId: message.id,
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === message.id
+              ? {
+                  ...msg,
+                  metadata: {
+                    ...msg.metadata,
+                    quote: msg.metadata?.quote
+                      ? {
+                          ...msg.metadata.quote,
+                          pdfGeneratedAt: result.generatedAt,
+                          pdfKey: result.key ?? msg.metadata.quote.pdfKey,
+                          estimateNumber: result.estimateNumber ?? msg.metadata.quote.estimateNumber,
+                          suggestedCustomerEmail: result.suggestedCustomerEmail ?? msg.metadata.quote.suggestedCustomerEmail,
+                        }
+                      : msg.metadata?.quote,
+                    quotePdf: {
+                      url: result.url,
+                      key: result.key,
+                      filename: result.filename,
+                      estimateNumber: result.estimateNumber,
+                      generatedAt: result.generatedAt,
+                    },
+                  },
+                }
+              : msg
+          )
+        );
+        setPdfPreview({
+          previewUrl: copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: message.id, inline: true }),
+          downloadUrl: result.url,
+          filename: result.filename,
+        });
+      } catch (err) {
+        console.warn('[AskAI] Failed to generate estimate PDF', err);
+        Alert.alert('Could not generate PDF', err instanceof Error ? err.message : 'Please try again.');
+      }
+    },
+    [conversationId, ensureConversation]
+  );
 
-  // Estimate Cost: open the email modal for a signed quote (prefill comes from quote.suggestedCustomerEmail).
+  // Estimate Cost: open the email modal for a generated quote PDF (prefill comes from quote.suggestedCustomerEmail).
   const handleEmailDocument = useCallback((message: Message) => {
     setEmailError(null);
     setEmailingMessage(message);
   }, []);
 
-  // Estimate Cost: POST the confirmed customer email → server attaches the signed PDF + sends.
+  // Estimate Cost: POST the confirmed customer email → server attaches the generated PDF + sends.
   const handleSendEmail = useCallback(
     async (to: string) => {
       const target = emailingMessage;
@@ -672,83 +714,6 @@ export const AskAITab: React.FC = () => {
       }
     },
     [emailingMessage, isEmailing, conversationId, ensureConversation]
-  );
-
-  // Open the signed PDF queued during signing. Captures-and-clears the ref so whichever of
-  // onDismiss / the timeout safety-net fires first wins and the other is a no-op.
-  const openPendingPdf = useCallback(() => {
-    const pending = pendingPdfRef.current;
-    if (!pending) return;
-    pendingPdfRef.current = null;
-    setPdfPreview(pending);
-  }, []);
-
-  // Estimate Cost: POST the captured signature → generate the signed PDF, persist the result
-  // on the message (so the card flips to "Download PDF"), then open the PDF.
-  const handleSubmitSignature = useCallback(
-    async (signatureBase64: string, signerName: string) => {
-      const target = signingMessage;
-      if (!target || isSigning) return;
-      setIsSigning(true);
-      try {
-        const convId = conversationId ?? (await ensureConversation());
-        if (!convId) {
-          console.warn('[AskAI] No conversation ID, cannot sign');
-          return;
-        }
-        const result = await copilotChatService.signEstimate({
-          conversationId: convId,
-          messageId: target.id,
-          signatureBase64,
-          signerName,
-        });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === target.id
-              ? {
-                  ...msg,
-                  metadata: {
-                    ...msg.metadata,
-                    requiresSignature: false,
-                    quote: msg.metadata?.quote
-                      ? {
-                          ...msg.metadata.quote,
-                          signed: true,
-                          signedAt: result.signedAt,
-                          signerName,
-                          pdfKey: result.key ?? msg.metadata.quote.pdfKey,
-                          estimateNumber: result.estimateNumber ?? msg.metadata.quote.estimateNumber,
-                          suggestedCustomerEmail: result.suggestedCustomerEmail ?? msg.metadata.quote.suggestedCustomerEmail,
-                        }
-                      : msg.metadata?.quote,
-                    quotePdf: {
-                      url: result.url,
-                      key: result.key,
-                      filename: result.filename,
-                      estimateNumber: result.estimateNumber,
-                      signedAt: result.signedAt,
-                    },
-                  },
-                }
-              : msg
-          )
-        );
-        // Queue the inline preview and close the pad. Opening it is deferred until the modal has
-        // fully dismissed (via onDismiss / the timeout) to avoid an iOS present-while-dismissing freeze.
-        pendingPdfRef.current = {
-          previewUrl: copilotChatService.estimatePdfUrl({ conversationId: convId, messageId: target.id, inline: true }),
-          downloadUrl: result.url,
-          filename: result.filename,
-        };
-        setSigningMessage(null);
-        setTimeout(openPendingPdf, 350);
-      } catch (err) {
-        console.warn('[AskAI] Failed to sign estimate', err);
-      } finally {
-        setIsSigning(false);
-      }
-    },
-    [signingMessage, isSigning, conversationId, ensureConversation, openPendingPdf]
   );
 
   /**
@@ -1374,11 +1339,11 @@ export const AskAITab: React.FC = () => {
         isStreaming={item.role === 'assistant' && item.id === streamingMessageId}
         onAnswerQuestion={handleAnswerQuestion}
         onDownloadPdf={handleDownloadPdf}
-        onSignDocument={handleSignDocument}
+        onGeneratePdf={handleGeneratePdf}
         onEmailDocument={handleEmailDocument}
       />
     ),
-    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleSignDocument, handleEmailDocument]
+    [streamingMessageId, handleAnswerQuestion, handleDownloadPdf, handleGeneratePdf, handleEmailDocument]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
@@ -1475,13 +1440,6 @@ export const AskAITab: React.FC = () => {
         />
       </View>
       </View>
-      <SignaturePad
-        visible={!!signingMessage}
-        submitting={isSigning}
-        onCancel={() => setSigningMessage(null)}
-        onSubmit={handleSubmitSignature}
-        onDismiss={openPendingPdf}
-      />
       <PdfPreview
         visible={!!pdfPreview}
         url={pdfPreview?.previewUrl ?? null}
