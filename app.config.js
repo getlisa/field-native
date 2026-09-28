@@ -19,6 +19,10 @@ export default {
       infoPlist: {
         // Microphone permission (for live transcription)
         NSMicrophoneUsageDescription: 'This app needs access to your microphone for live transcription during job visits.',
+        // Speech recognition permission (expo-speech-recognition, for voice input)
+        NSSpeechRecognitionUsageDescription: 'This app uses speech recognition to turn what you say into text for voice questions and live transcription during job visits.',
+        // Face ID (referenced by expo-secure-store for protected credential storage)
+        NSFaceIDUsageDescription: 'This app uses Face ID to protect your saved sign-in information.',
         
         // Camera permission (for taking photos)
         NSCameraUsageDescription: 'This app needs access to your camera to take photos during job visits.',
