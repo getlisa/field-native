@@ -7,6 +7,9 @@ import Markdown from 'react-native-markdown-display';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/contexts/ThemeContext';
+import { QuoteCard } from '@/components/chat/QuoteCard';
+import { QuestionsCard } from '@/components/chat/QuestionsCard';
+import { ThinkingTrace } from '@/components/chat/ThinkingTrace';
 import type { Message } from '@/components/chat/types';
 
 interface MessageAttachment {
@@ -22,11 +25,23 @@ interface ChatMessageProps {
   message: Message;
   /** True while tokens are still streaming for this message */
   isStreaming?: boolean;
+  /** Estimate Cost follow-up answer: sends the chosen option value back to the endpoint. */
+  onAnswerQuestion?: (value: string) => void;
+  /** Estimate Cost: download/open the generated quotation PDF for this message. */
+  onDownloadPdf?: (message: Message) => void | Promise<void>;
+  /** Estimate Cost: generate the quotation PDF for this quote. */
+  onGeneratePdf?: (message: Message) => Promise<void>;
+  /** Estimate Cost: email the generated PDF to the customer. */
+  onEmailDocument?: (message: Message) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, isStreaming = false, onAnswerQuestion, onDownloadPdf, onGeneratePdf, onEmailDocument }) => {
   const { colors } = useTheme();
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
   const isAssistant = message.role === 'assistant';
+  // Estimate quote PDF state: a PDF exists once it has been generated (key persisted or URL returned).
+  const hasPdf = !!(message.metadata?.quote?.pdfKey || message.metadata?.quotePdf?.url);
   const isProactive = message.content.startsWith('💡');
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [loadingImages, setLoadingImages] = useState<Set<string>>(new Set());
@@ -263,7 +278,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
         />
       </View>
       <View style={[styles.messageContent, !isAssistant && styles.userMessageContent]}>
-        {isAssistant &&
+        {isAssistant && message.metadata?.thinkingTrace?.length ? (
+          <ThinkingTrace
+            steps={message.metadata.thinkingTrace}
+            active={isStreaming}
+            durationSeconds={message.thoughtDurationSeconds}
+          />
+        ) : (
+          isAssistant &&
           message.thoughtDurationSeconds != null &&
           !isChecklistUpdate &&
           !isProactiveSuggestion && (
@@ -273,7 +295,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
                 Thought for {message.thoughtDurationSeconds}s
               </ThemedText>
             </View>
-          )}
+          )
+        )}
+        {(!!message.content || (isImageMessage && imageAttachments.length > 0)) && (
         <View
           style={[
             styles.bubble,
@@ -334,6 +358,45 @@ export const ChatMessage: React.FC<ChatMessageProps> = React.memo(({ message, is
             </Markdown>
           ) : null}
         </View>
+        )}
+        {isAssistant && message.metadata?.quote ? (
+          <QuoteCard
+            quote={message.metadata.quote}
+            downloadingPdf={downloadingPdf}
+            onDownloadPdf={
+              onDownloadPdf && hasPdf
+                ? async () => {
+                    setDownloadingPdf(true);
+                    try {
+                      await onDownloadPdf(message);
+                    } finally {
+                      setDownloadingPdf(false);
+                    }
+                  }
+                : undefined
+            }
+            generatingPdf={generatingPdf}
+            onGeneratePdf={
+              !hasPdf && !isStreaming && onGeneratePdf
+                ? async () => {
+                    setGeneratingPdf(true);
+                    try {
+                      await onGeneratePdf(message);
+                    } finally {
+                      setGeneratingPdf(false);
+                    }
+                  }
+                : undefined
+            }
+            onEmail={
+              hasPdf && onEmailDocument ? () => onEmailDocument(message) : undefined
+            }
+            emailedTo={message.metadata?.quote?.emailedTo}
+          />
+        ) : null}
+        {isAssistant && message.metadata?.questions?.length ? (
+          <QuestionsCard questions={message.metadata.questions} onAnswer={onAnswerQuestion} />
+        ) : null}
         <ThemedText
           style={[
             styles.timestamp,

@@ -25,6 +25,7 @@ interface JobDetailContextValue {
   transcriptionScrollRef?: React.RefObject<{ scrollToEnd: (options?: { animated?: boolean }) => void; scrollToTurnId?: (turnId: string | number) => void } | null>; // For auto-scroll
   isLoadingDbTurns?: boolean; // Loading state for DB turns
   setActiveTab?: (tab: TabKey) => void; // For navigating between tabs
+  setSwipeEnabled?: (enabled: boolean) => void; // Toggle tab swipe (e.g. off while a signature pad is open)
   // Audio controls for live audio playback (viewers only)
   isReceivingAudio?: boolean;
   isAudioEnabled?: boolean;
