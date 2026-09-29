@@ -69,3 +69,7 @@ app-example/
 # Large assets that aren't needed for build
 assets/images/react-logo*.png
 assets/images/partial-react-logo.png
+
+# Local signing credentials
+credentials.json
+credentials/

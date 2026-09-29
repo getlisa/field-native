@@ -44,3 +44,7 @@ app-example
 
 # build artifacts
 *.ipa
+
+# Local signing credentials downloaded from EAS (never commit)
+credentials.json
+credentials/

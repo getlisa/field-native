@@ -12,13 +12,10 @@ import {
   Keyboard,
   Pressable,
   Platform,
-  KeyboardAvoidingView,
-  Dimensions,
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { ThemedText } from '@/components/themed-text';
 import { Badge, Button, Card, CardBody, CardFooter, CardHeader } from '@/components/ui';
@@ -27,7 +24,6 @@ import { Spacing, FontSizes, BorderRadius } from '@/constants/theme';
 import type { Job, JobStatus, JobFilterOptions } from '@/services/jobService';
 import type { User } from '@/store/useAuthStore';
 import { jobService, type CreateJobRequest, formatCrmDisplayText } from '@/services/jobService';
-import { usersService } from '@/services/usersService';
 import { crmService, type CrmConnection } from '@/services/crmService';
 import { posthog, PostHogEvents, getCompanyIdForTracking } from '@/lib/posthog';
 import { useCompanyConfigsStore } from '@/store/useCompanyConfigsStore';
@@ -49,6 +45,13 @@ const STATUS_CONFIG: Record<
   scheduled: { icon: 'calendar-outline', variant: 'default', label: 'Scheduled' },
   ongoing: { icon: 'radio-button-on', variant: 'warning', label: 'In Progress' },
   completed: { icon: 'checkmark-circle', variant: 'success', label: 'Completed' },
+};
+
+/** Sample details used when "New Job" is tapped (no form — the job opens straight into chat). */
+const SAMPLE_JOB: Omit<CreateJobRequest, 'start_timestamp'> = {
+  job_target_name: 'Sample Job',
+  address: '123 Main Street, Toronto, ON',
+  description: 'Sample job created from New Job to start a Clara chat right away.',
 };
 
 interface JobCardProps {
@@ -124,7 +127,6 @@ export const JobsList: React.FC<Props> = ({
 }) => {
   const { colors } = useTheme();
   const isFocused = useIsFocused();
-  const insets = useSafeAreaInsets();
   const salesCoachingEnabled = useCompanyConfigsStore((state: { configs: { sales_coaching_enabled?: boolean } | null }) => state.configs?.sales_coaching_enabled ?? false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -132,8 +134,6 @@ export const JobsList: React.FC<Props> = ({
   const [filterFrom, setFilterFrom] = useState<string>('');
   const [filterTo, setFilterTo] = useState<string>('');
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isTechSelectOpen, setIsTechSelectOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [crmConnection, setCrmConnection] = useState<CrmConnection | null>(null);
   
@@ -182,80 +182,9 @@ export const JobsList: React.FC<Props> = ({
     }
   }, []); // Only run once on mount
 
-  const [customerName, setCustomerName] = useState('');
-  const [address, setAddress] = useState('');
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 16)); // yyyy-mm-ddThh:mm
-  const [startDateValue, setStartDateValue] = useState<Date>(new Date()); // Date object for picker
-  const [showStartDatePicker, setShowStartDatePicker] = useState(false);
-  const [description, setDescription] = useState('');
-  const [technicianId, setTechnicianId] = useState<string>(currentUser?.id ?? 'unassigned');
-  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [submitting, setSubmitting] = useState(false);
-  type TechnicianOption = { id?: string; first_name?: string; last_name?: string };
-  const [technicians, setTechnicians] = useState<TechnicianOption[]>([]);
-  const [techniciansLoading, setTechniciansLoading] = useState(false);
-  const [techniciansError, setTechniciansError] = useState<string | null>(null);
+  const [creatingJob, setCreatingJob] = useState(false);
   const searchInputRef = useRef<TextInput | null>(null);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-
   const isTechnician = currentUser?.role === 'technician';
-
-  // Track keyboard height on Android to position modal content above keyboard
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-
-    const keyboardShowListener = Keyboard.addListener('keyboardDidShow', (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
-    });
-
-    const keyboardHideListener = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      keyboardShowListener.remove();
-      keyboardHideListener.remove();
-    };
-  }, []);
-
-  const validateForm = () => {
-    const errors: Record<string, string> = {};
-    if (!customerName.trim()) errors.customerName = 'Customer/Company is required';
-    if (!address.trim()) errors.address = 'Address is required';
-    if (!startDate) errors.startDate = 'Start date/time is required';
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  const loadTechnicians = useCallback(async () => {
-    if (isTechnician) return;
-    setTechniciansLoading(true);
-    setTechniciansError(null);
-    try {
-      const res = await usersService.listUsers({ role: 'technician', limit: 100 });
-      const mapped =
-        res.users?.map((u) => ({
-          id: u.id,
-          first_name: u.first_name ?? undefined,
-          last_name: u.last_name ?? undefined,
-        })) ?? [];
-      setTechnicians(mapped);
-    } catch (err: any) {
-      setTechniciansError(err?.message || 'Unable to load technicians');
-    } finally {
-      setTechniciansLoading(false);
-    }
-  }, [isTechnician]);
-
-  useEffect(() => {
-    if (isCreateModalOpen && !isTechnician) {
-      loadTechnicians();
-    }
-    // Reset date picker state when modal closes (only relevant for iOS now)
-    if (!isCreateModalOpen && Platform.OS === 'ios') {
-      setShowStartDatePicker(false);
-    }
-  }, [isCreateModalOpen, isTechnician, loadTechnicians]);
 
   // Debounce search input - update debouncedSearch after 500ms of no typing
   useEffect(() => {
@@ -401,28 +330,35 @@ export const JobsList: React.FC<Props> = ({
     }
   }, [currentUser, onRefresh]);
 
-  const handleSubmit = useCallback(async () => {
-    if (!validateForm()) return;
-    setSubmitting(true);
+  // New Job: skip the form — create a job with sample details and open its Ask AI chat.
+  const handleNewJob = useCallback(async () => {
+    if (creatingJob) return;
+    setCreatingJob(true);
     try {
-      // Use startDateValue (Date object) instead of startDate (string)
-      const startDateISO = startDateValue.toISOString();
-      const payload: CreateJobRequest = {
-        job_target_name: customerName.trim(),
-        address: address.trim(),
-        start_timestamp: startDateISO,
-        description: description.trim() || undefined,
-      };
-      if (!isTechnician && technicianId && technicianId !== 'unassigned') {
-        payload.technician_id = technicianId;
+      if (posthog) {
+        const companyId = getCompanyIdForTracking();
+        posthog.capture(PostHogEvents.JOB_CREATION_STARTED, {
+          ...(companyId !== undefined && { company_id: companyId }),
+        });
       }
+
+      const now = new Date();
+      const payload: CreateJobRequest = {
+        ...SAMPLE_JOB,
+        job_target_name: `${SAMPLE_JOB.job_target_name} · ${now.toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`,
+        start_timestamp: now.toISOString(),
+      };
       if (isTechnician && currentUser?.id) {
         payload.technician_id = currentUser.id;
       }
 
       const createdJob = await jobService.createJob(payload);
-      
-      // Track job creation event
+
       if (posthog) {
         const companyId = createdJob.company_id ? Number(createdJob.company_id) : getCompanyIdForTracking();
         posthog.capture(PostHogEvents.JOB_CREATED, {
@@ -431,28 +367,17 @@ export const JobsList: React.FC<Props> = ({
           ...(createdJob.technician_id && { technician_id: createdJob.technician_id }),
         });
       }
-      
-      // reset form
-      setCustomerName('');
-      setAddress('');
-      setDescription('');
-      const now = new Date();
-      setStartDate(now.toISOString().slice(0, 16));
-      setStartDateValue(now);
-      if (!isTechnician) {
-        setTechnicianId('unassigned');
-      } else if (currentUser?.id) {
-        setTechnicianId(currentUser.id);
-      }
-      setFormErrors({});
-      setIsCreateModalOpen(false);
+
       onRefresh();
-    } catch (err) {
+      // Job detail opens on the Ask AI tab by default.
+      onJobPress?.(createdJob);
+    } catch (err: any) {
       console.error('Error creating job:', err);
+      Alert.alert('Could not create job', err?.message || 'Please try again.');
     } finally {
-      setSubmitting(false);
+      setCreatingJob(false);
     }
-  }, [customerName, address, startDateValue, description, technicianId, isTechnician, currentUser, onRefresh]);
+  }, [creatingJob, isTechnician, currentUser, onRefresh, onJobPress]);
 
   const renderSection = (title: string, data: Job[]) => {
     if (data.length === 0) return null;
@@ -509,16 +434,8 @@ export const JobsList: React.FC<Props> = ({
           <Button 
             size="sm" 
             variant="primary" 
-            onPress={() => {
-              setIsCreateModalOpen(true);
-              // Track job creation started
-              if (posthog) {
-                const companyId = getCompanyIdForTracking();
-                posthog.capture(PostHogEvents.JOB_CREATION_STARTED, {
-                  ...(companyId !== undefined && { company_id: companyId }),
-                });
-              }
-            }} 
+            loading={creatingJob}
+            onPress={handleNewJob}
             icon="add"
           >
             New Job
@@ -784,314 +701,6 @@ export const JobsList: React.FC<Props> = ({
         </Pressable>
       </Modal>
 
-      {/* Create Job Modal */}
-      <Modal
-        visible={isCreateModalOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setIsCreateModalOpen(false)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setIsCreateModalOpen(false)}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={{ flex: 1, justifyContent: 'flex-end' }}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-          >
-            <SafeAreaView edges={['bottom']} style={{ backgroundColor: colors.backgroundSecondary }}>
-              <Pressable
-                style={[
-                  styles.modalContent,
-                  styles.createJobModalContent,
-                  { backgroundColor: colors.backgroundSecondary },
-                  {
-                    maxHeight: Platform.OS === 'android' && keyboardHeight > 0
-                      ? Dimensions.get('window').height - keyboardHeight - insets.top - 20 // Account for keyboard + top safe area
-                      : Dimensions.get('window').height - insets.top - insets.bottom - 20, // Account for top + bottom safe areas
-                  },
-                  Platform.OS === 'android' && keyboardHeight > 0 && {
-                    marginBottom: keyboardHeight,
-                  },
-                ]}
-                onPress={(e) => e.stopPropagation()}
-              >
-              <ScrollView
-                showsVerticalScrollIndicator={true}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={styles.modalScrollContent}
-                bounces={false}
-                style={[
-                  styles.modalScrollView,
-                  {
-                    // Calculate maxHeight dynamically: window height - top safe area - bottom safe area - footer height (approx 80px) - padding
-                    maxHeight: Platform.OS === 'android' && keyboardHeight > 0
-                      ? Dimensions.get('window').height - keyboardHeight - insets.top - 80 - 40
-                      : Dimensions.get('window').height - insets.top - insets.bottom - 80 - 40,
-                  },
-                ]}
-                nestedScrollEnabled={true}
-                scrollEnabled={true}
-              >
-            <ThemedText type="subtitle" style={styles.modalTitle}>
-              Add New Service Job
-            </ThemedText>
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>
-              Create a new service job. Fill in the details to get started.
-            </ThemedText>
-
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Customer/Company *</ThemedText>
-            <TextInput
-              value={customerName}
-              onChangeText={setCustomerName}
-              placeholder="e.g., Acme Corporation"
-              placeholderTextColor={colors.textTertiary}
-              style={[
-                styles.modalInput,
-                { borderColor: formErrors.customerName ? colors.error : colors.border, color: colors.text },
-              ]}
-            />
-            {formErrors.customerName && (
-              <ThemedText style={[styles.errorText, { color: colors.error }]}>{formErrors.customerName}</ThemedText>
-            )}
-
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Address *</ThemedText>
-            <TextInput
-              value={address}
-              onChangeText={setAddress}
-              placeholder="e.g., 123 Main St, City"
-              placeholderTextColor={colors.textTertiary}
-              style={[
-                styles.modalInput,
-                { borderColor: formErrors.address ? colors.error : colors.border, color: colors.text },
-              ]}
-            />
-            {formErrors.address && (
-              <ThemedText style={[styles.errorText, { color: colors.error }]}>{formErrors.address}</ThemedText>
-            )}
-
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Start Date & Time *</ThemedText>
-            <TouchableOpacity
-              style={[
-                styles.modalInput,
-                styles.datePickerButton,
-                { borderColor: formErrors.startDate ? colors.error : colors.border },
-              ]}
-              onPress={() => {
-                if (Platform.OS === 'android') {
-                  // Use imperative API on Android to avoid unmount errors
-                  // First show date picker
-                  DateTimePickerAndroid.open({
-                    value: startDateValue,
-                    mode: 'date',
-                    onChange: (dateEvent, selectedDate) => {
-                      if (dateEvent.type === 'set' && selectedDate) {
-                        // After date is selected, show time picker
-                        DateTimePickerAndroid.open({
-                          value: selectedDate,
-                          mode: 'time',
-                          onChange: (timeEvent, selectedTime) => {
-                            if (timeEvent.type === 'set' && selectedTime) {
-                              setStartDateValue(selectedTime);
-                              setStartDate(selectedTime.toISOString().slice(0, 16));
-                            } else if (timeEvent.type === 'dismissed') {
-                              // If time picker was dismissed, still use the date selected
-                              setStartDateValue(selectedDate);
-                              setStartDate(selectedDate.toISOString().slice(0, 16));
-                            }
-                          },
-                        });
-                      }
-                    },
-                  });
-                } else {
-                  // On iOS, show the picker component
-                  setShowStartDatePicker(true);
-                }
-              }}
-            >
-              <ThemedText style={{ color: colors.text }}>
-                {startDateValue.toLocaleString(undefined, {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </ThemedText>
-              <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
-            {/* Only render DateTimePicker component on iOS */}
-            {Platform.OS === 'ios' && showStartDatePicker && (
-              <DateTimePicker
-                value={startDateValue}
-                mode="datetime"
-                display="spinner"
-                onChange={(event, selectedDate) => {
-                  // On iOS, hide after selection
-                  setShowStartDatePicker(false);
-                  if (selectedDate) {
-                    setStartDateValue(selectedDate);
-                    setStartDate(selectedDate.toISOString().slice(0, 16));
-                  }
-                }}
-              />
-            )}
-            {formErrors.startDate && (
-              <ThemedText style={[styles.errorText, { color: colors.error }]}>{formErrors.startDate}</ThemedText>
-            )}
-
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Assign Technician</ThemedText>
-            {isTechnician ? (
-              <View
-                style={[
-                  styles.modalInput,
-                  styles.disabledInput,
-                  { borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-              >
-                <ThemedText style={{ color: colors.text }}>
-                  {currentUser?.first_name || currentUser?.last_name || 'Technician'}
-                </ThemedText>
-              </View>
-            ) : (
-              <>
-                <TouchableOpacity
-                  style={[
-                    styles.modalInput,
-                    styles.selectInput,
-                    { borderColor: colors.border, backgroundColor: colors.backgroundSecondary },
-                  ]}
-                  onPress={() => setIsTechSelectOpen(true)}
-                >
-                  <ThemedText style={{ color: colors.text }}>
-                    {techniciansLoading
-                      ? 'Loading...'
-                      : technicianId === 'unassigned'
-                        ? 'Unassigned'
-                        : technicians.find((t) => t.id === technicianId)?.first_name ||
-                          technicians.find((t) => t.id === technicianId)?.last_name ||
-                          'Select technician'}
-                  </ThemedText>
-                  <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
-                </TouchableOpacity>
-                {techniciansError && (
-                  <ThemedText style={[styles.errorText, { color: colors.error }]}>{techniciansError}</ThemedText>
-                )}
-              </>
-            )}
-
-            <ThemedText style={[styles.modalLabel, { color: colors.textSecondary }]}>Description</ThemedText>
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Brief description of the work to be done..."
-              placeholderTextColor={colors.textTertiary}
-              style={[styles.modalInput, styles.textArea, { borderColor: colors.border, color: colors.text }]}
-              multiline
-            />
-              </ScrollView>
-              
-              {/* Sticky Footer */}
-              <View style={[styles.modalFooter, { 
-                backgroundColor: colors.backgroundSecondary,
-                borderTopColor: colors.border,
-              }]}>
-              <Button 
-                variant="secondary" 
-                size="sm" 
-                onPress={() => {
-                  setIsCreateModalOpen(false);
-                  // Track job creation cancelled
-                  if (posthog) {
-                    const companyId = getCompanyIdForTracking();
-                    posthog.capture(PostHogEvents.JOB_CREATION_CANCELLED, {
-                      ...(companyId !== undefined && { company_id: companyId }),
-                    });
-                  }
-                }}
-              >
-                Cancel
-              </Button>
-              <Button variant="primary" size="sm" loading={submitting} onPress={handleSubmit}>
-                Create Job
-              </Button>
-              </View>
-            </Pressable>
-            </SafeAreaView>
-          </KeyboardAvoidingView>
-        </Pressable>
-      </Modal>
-
-      {/* Technician Select Modal */}
-      <Modal
-        visible={isTechSelectOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setIsTechSelectOpen(false)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setIsTechSelectOpen(false)}>
-          <Pressable
-            style={[styles.modalContent, { backgroundColor: colors.backgroundSecondary }]}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={styles.modalHeaderRow}>
-              <ThemedText type="subtitle">Select Technician</ThemedText>
-              <TouchableOpacity onPress={() => setIsTechSelectOpen(false)}>
-                <Ionicons name="close" size={22} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={{ maxHeight: 320 }}>
-              <TouchableOpacity
-                style={[
-                  styles.techRow,
-                  {
-                    borderColor: colors.border,
-                    backgroundColor: technicianId === 'unassigned' ? colors.primary + '22' : colors.background,
-                  },
-                ]}
-                onPress={() => {
-                  setTechnicianId('unassigned');
-                  setIsTechSelectOpen(false);
-                }}
-              >
-                <ThemedText style={{ color: colors.text }}>Unassigned</ThemedText>
-              </TouchableOpacity>
-              {technicians.map((tech) => {
-                const name = `${tech.first_name || ''} ${tech.last_name || ''}`.trim() || 'Technician';
-                const selected = technicianId === tech.id;
-                return (
-                  <TouchableOpacity
-                    key={tech.id}
-                    style={[
-                      styles.techRow,
-                      {
-                        borderColor: colors.border,
-                        backgroundColor: selected ? colors.primary + '22' : colors.background,
-                      },
-                    ]}
-                    onPress={() => {
-                      setTechnicianId(tech.id || 'unassigned');
-                      setIsTechSelectOpen(false);
-                    }}
-                  >
-                    <ThemedText style={{ color: colors.text }}>{name}</ThemedText>
-                    {selected && <Ionicons name="checkmark" size={18} color={colors.primary} />}
-                  </TouchableOpacity>
-                );
-              })}
-              {techniciansLoading && (
-                <View style={styles.techRow}>
-                  <ThemedText style={{ color: colors.textSecondary }}>Loading technicians...</ThemedText>
-                </View>
-              )}
-              {techniciansError && (
-                <View style={styles.techRow}>
-                  <ThemedText style={{ color: colors.error }}>{techniciansError}</ThemedText>
-                </View>
-              )}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 };
@@ -1229,30 +838,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: BorderRadius['2xl'],
     gap: Spacing.sm,
   },
-  createJobModalContent: {
-    flexDirection: 'column',
-    padding: 0, // Remove padding, we add it to ScrollView content
-    // maxHeight is set dynamically to account for safe areas
-  },
-  modalScrollView: {
-    // No flex: 1 - let it size naturally based on content
-    // maxHeight will constrain it when content is too large
-    // Max height is calculated dynamically to account for safe areas and footer
-  },
-  modalScrollContent: {
-    padding: Spacing.lg,
-    paddingBottom: Spacing.md,
-    // No flexGrow - let content size naturally, ScrollView will scroll only when needed
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: Spacing.sm,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    borderTopWidth: 1,
-  },
   modalTitle: {
     marginBottom: Spacing.xs,
   },
@@ -1273,21 +858,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minHeight: 48,
   },
-  textArea: {
-    height: 100,
-    textAlignVertical: 'top',
-  },
   modalButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: Spacing.sm,
     marginTop: Spacing.md,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.md,
   },
   statusRow: {
     flexDirection: 'row',
@@ -1303,32 +878,9 @@ const styles = StyleSheet.create({
   modalSection: {
     gap: Spacing.sm,
   },
-  disabledInput: {
-    justifyContent: 'center',
-    height: 48,
-  },
-  errorText: {
-    fontSize: FontSizes.xs,
-    marginTop: Spacing.xs / 2,
-  },
   feedbackText: {
     fontSize: FontSizes.md,
     marginBottom: Spacing.sm,
-  },
-  techRow: {
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    borderWidth: 1,
-    borderRadius: BorderRadius.md,
-    marginBottom: Spacing.sm,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  selectInput: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
 });
 
